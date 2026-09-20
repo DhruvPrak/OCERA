@@ -1,17 +1,19 @@
 #include "free_space_manager.h"
 #include <stdexcept>
+#include <string>
 
 namespace minidb {
-
-namespace {
-constexpr page_id_t kBitmapPageId = 0;
-}
 
 FreeSpaceManager::FreeSpaceManager(DiskManager& disk_manager)
     : disk_manager_(disk_manager), bitmap_(PAGE_SIZE, 0) {
     if (disk_manager_.GetNumPages() == 0) {
-        // Brand new database file: reserve page 0 for the bitmap itself.
-        SetBit(kBitmapPageId, true);
+        // Brand new database file: reserve page 0 for the bitmap itself and
+        // page 1 for the database header (see DatabaseHeader). Both must be
+        // marked used here, before any real AllocatePage() call happens, so
+        // the ordinary linear scan below naturally skips them -- no special
+        // "start scanning at page 2" logic is needed.
+        SetBit(BITMAP_PAGE_ID, true);
+        SetBit(HEADER_PAGE_ID, true);
         FlushBitmap();
     } else {
         LoadBitmap();
@@ -19,11 +21,11 @@ FreeSpaceManager::FreeSpaceManager(DiskManager& disk_manager)
 }
 
 void FreeSpaceManager::LoadBitmap() {
-    disk_manager_.ReadPage(kBitmapPageId, reinterpret_cast<char*>(bitmap_.data()));
+    disk_manager_.ReadPage(BITMAP_PAGE_ID, reinterpret_cast<char*>(bitmap_.data()));
 }
 
 void FreeSpaceManager::FlushBitmap() {
-    disk_manager_.WritePage(kBitmapPageId, reinterpret_cast<const char*>(bitmap_.data()));
+    disk_manager_.WritePage(BITMAP_PAGE_ID, reinterpret_cast<const char*>(bitmap_.data()));
 }
 
 void FreeSpaceManager::SetBit(page_id_t page_id, bool value) {
@@ -46,8 +48,10 @@ page_id_t FreeSpaceManager::AllocatePage() {
     std::lock_guard<std::mutex> lock(mutex_);
     const page_id_t max_trackable_pages = static_cast<page_id_t>(PAGE_SIZE * 8);
 
-    // Page 0 is always reserved for the bitmap, so start scanning at page 1.
-    for (page_id_t candidate = 1; candidate < max_trackable_pages; ++candidate) {
+    // Pages 0 and 1 are permanently reserved (bitmap, header) and were
+    // already marked used in the constructor, so this scan finds the first
+    // real free page without needing any special-cased starting point.
+    for (page_id_t candidate = BITMAP_PAGE_ID + 1; candidate < max_trackable_pages; ++candidate) {
         if (!GetBit(candidate)) {
             SetBit(candidate, true);
             FlushBitmap();
@@ -63,8 +67,10 @@ page_id_t FreeSpaceManager::AllocatePage() {
 
 void FreeSpaceManager::DeallocatePage(page_id_t page_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (page_id == kBitmapPageId) {
-        throw std::invalid_argument("FreeSpaceManager::DeallocatePage: cannot free the bitmap page");
+    if (page_id == BITMAP_PAGE_ID || page_id == HEADER_PAGE_ID) {
+        throw std::invalid_argument(
+            "FreeSpaceManager::DeallocatePage: page " + std::to_string(page_id) +
+            " is permanently reserved and cannot be freed");
     }
     SetBit(page_id, false);
     FlushBitmap();

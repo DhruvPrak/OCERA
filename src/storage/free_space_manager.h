@@ -11,8 +11,10 @@ namespace minidb {
 // filesystem uses for its free-block bitmap (OS topic: "file allocation
 // methods, free space management").
 //
-// Page 0 of the file is reserved to store this bitmap itself, so it is
-// never handed out to callers.
+// Page 0 of the file is reserved to store this bitmap itself, and page 1 is
+// reserved for the database header (see DatabaseHeader), so neither is ever
+// handed out to callers via AllocatePage(), nor accepted by
+// DeallocatePage().
 //
 // NOTE (documented scope limit): a single PAGE_SIZE-byte bitmap can track up
 // to PAGE_SIZE * 8 pages (32,768 pages = 128 MB at 4 KB pages). That's fine

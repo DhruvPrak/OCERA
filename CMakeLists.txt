@@ -14,6 +14,7 @@ find_package(Threads REQUIRED)
 add_library(minidb_storage
     src/storage/disk_manager.cpp
     src/storage/free_space_manager.cpp
+    src/storage/database_header.cpp
 )
 target_include_directories(minidb_storage PUBLIC src)
 target_link_libraries(minidb_storage PUBLIC Threads::Threads)
@@ -23,3 +24,6 @@ target_link_libraries(minidb PRIVATE Threads::Threads minidb_storage)
 
 add_executable(test_storage tests/test_storage.cpp)
 target_link_libraries(test_storage PRIVATE minidb_storage)
+
+add_executable(test_header tests/test_header.cpp)
+target_link_libraries(test_header PRIVATE minidb_storage)
