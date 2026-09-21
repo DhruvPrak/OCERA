@@ -1,5 +1,6 @@
-# MiniDB
+# OCERA
 
+**Optimized Concurrent & Crash-Resilient Database Engine**
 A concurrent, crash-proof embedded database engine, built from scratch to
 demonstrate core Operating Systems (paging, scheduling, synchronization,
 deadlock handling) and DBMS (transactions, locking, indexing, recovery, ACID)
@@ -32,16 +33,16 @@ terminal already inside the container, with this folder mounted at
 
 **Option 2 - plain Docker commands:**
 ```bash
-docker build -t minidb-dev .
-docker run -it --rm -v "$(pwd):/workspace" minidb-dev
+docker build -t ocera-dev .
+docker run -it --rm -v "$(pwd):/workspace" ocera-dev
 # you're now inside the container, in /workspace
 mkdir -p build && cd build
 cmake -G "Unix Makefiles" ..
 cmake --build .
-./minidb
+./ocera
 ```
 
-If everything is set up correctly, `minidb` runs a threading sanity
+If everything is set up correctly, `ocera` runs a threading sanity
 check and prints:
 
 ```
@@ -58,7 +59,7 @@ mkdir build
 cd build
 cmake -G "MinGW Makefiles" ..   # on Linux/Mac use: cmake ..
 cmake --build .
-./minidb.exe   # on Linux/Mac: ./minidb
+./ocera.exe   # on Linux/Mac: ./ocera
 ```
 
 ## Roadmap

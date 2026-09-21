@@ -4,9 +4,9 @@
 #include <string>
 #include "../common/page.h"
 
-namespace minidb {
+namespace ocera {
 
-// DiskManager is the only piece of MiniDB allowed to talk to the operating
+// DiskManager is the only piece of OCERA allowed to talk to the operating
 // system's file I/O directly. Everyone else (buffer pool, B+Tree, WAL...)
 // only ever thinks in terms of "page N", never raw byte offsets.
 //
@@ -41,4 +41,4 @@ private:
     std::mutex db_io_mutex_;
 };
 
-}  // namespace minidb
+}  // namespace ocera

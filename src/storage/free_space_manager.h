@@ -4,7 +4,7 @@
 #include <vector>
 #include "disk_manager.h"
 
-namespace minidb {
+namespace ocera {
 
 // Tracks which pages in the database file are in use, using a bitmap: one
 // bit per page, 1 = allocated, 0 = free. This is the same idea a real
@@ -45,4 +45,4 @@ private:
     bool GetBit(page_id_t page_id) const;
 };
 
-}  // namespace minidb
+}  // namespace ocera

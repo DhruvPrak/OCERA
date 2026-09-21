@@ -1,4 +1,4 @@
-# MiniDB build/dev environment
+# OCERA build/dev environment
 # Every teammate gets this exact same compiler + tools, regardless of
 # whether their host machine is Windows, Mac, or Linux.
 

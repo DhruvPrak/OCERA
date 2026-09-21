@@ -10,7 +10,7 @@
 #include "../src/storage/disk_manager.h"
 #include "../src/storage/free_space_manager.h"
 
-using namespace minidb;
+using namespace ocera;
 
 namespace {
 
@@ -34,7 +34,7 @@ void CorruptPage1U32(const std::string& db_file, std::size_t offset, std::uint32
 }  // namespace
 
 int main() {
-    std::cout << "=== MiniDB Database Header Test ===\n\n";
+    std::cout << "=== OCERA Database Header Test ===\n\n";
     const std::string db_file = "test_header.db";
     std::remove(db_file.c_str());
 
@@ -95,8 +95,8 @@ int main() {
         std::cout << "    PASSED: reopened header matches what was originally written.\n\n";
     }
 
-    // --- E: a garbage/non-MiniDB file is rejected cleanly ---
-    std::cout << "[E] Opening a garbage (non-MiniDB) file...\n";
+    // --- E: a garbage/non-OCERA file is rejected cleanly ---
+    std::cout << "[E] Opening a garbage (non-OCERA) file...\n";
     {
         const std::string garbage_file = "test_header_garbage.db";
         std::remove(garbage_file.c_str());

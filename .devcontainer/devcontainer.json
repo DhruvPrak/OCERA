@@ -1,5 +1,5 @@
 {
-    "name": "MiniDB Dev Environment",
+    "name": "OCERA Dev Environment",
     "build": {
         "dockerfile": "../Dockerfile"
     },

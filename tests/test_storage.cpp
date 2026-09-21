@@ -5,10 +5,10 @@
 #include "../src/storage/disk_manager.h"
 #include "../src/storage/free_space_manager.h"
 
-using namespace minidb;
+using namespace ocera;
 
 int main() {
-    std::cout << "=== MiniDB Storage Layer Test ===\n\n";
+    std::cout << "=== OCERA Storage Layer Test ===\n\n";
 
     const std::string db_file = "test.db";
     std::remove(db_file.c_str());  // start from a clean file every run
@@ -25,7 +25,7 @@ int main() {
     std::cout << "[2] Writing data to page " << p1 << " and reading it back...\n";
     char write_buf[PAGE_SIZE];
     std::memset(write_buf, 0, PAGE_SIZE);
-    std::strcpy(write_buf, "Hello from MiniDB's storage engine!");
+    std::strcpy(write_buf, "Hello from OCERA's storage engine!");
     disk_manager.WritePage(p1, write_buf);
 
     char read_buf[PAGE_SIZE];

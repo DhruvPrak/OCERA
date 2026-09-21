@@ -2,8 +2,8 @@
 #include <cstddef>
 #include <cstdint>
 
-// Shared constants used across every MiniDB module.
-namespace minidb {
+// Shared constants used across every OCERA module.
+namespace ocera {
 
 // Every page on disk (and every page cached in memory later, in the buffer
 // pool) is exactly this many bytes. Fixed-size pages are what let the
@@ -19,4 +19,4 @@ constexpr std::size_t PAGE_SIZE = 4096;
 constexpr std::int32_t BITMAP_PAGE_ID = 0;  // page 0: free-space bitmap
 constexpr std::int32_t HEADER_PAGE_ID = 1;  // page 1: database header
 
-}  // namespace minidb
+}  // namespace ocera
