@@ -1,3 +1,13 @@
+<p align="center">
+  <img src="assets/logo/ocera-logo.png" alt="OCERA" width="500">
+</p>
+
+<h1 align="center">OCERA</h1>
+
+<p align="center">
+  <strong>Optimized Concurrent & Crash-Resilient Database Engine</strong>
+</p>
+
 # OCERA
 
 **Optimized Concurrent & Crash-Resilient Database Engine**
