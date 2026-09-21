@@ -3,10 +3,10 @@
 #include "disk_manager.h"
 #include "../common/config.h"
 
-namespace minidb {
+namespace ocera {
 
 // DatabaseHeader owns the contents of page HEADER_PAGE_ID (page 1): a small
-// fixed-layout record that identifies a file as a MiniDB database and
+// fixed-layout record that identifies a file as a OCERA database and
 // records the format it was written with. It is a peer of FreeSpaceManager,
 // not a layer built on top of it -- FreeSpaceManager must have already
 // reserved page 1 (see its constructor) before a DatabaseHeader is
@@ -19,7 +19,7 @@ namespace minidb {
 // machine can be read correctly on another.
 class DatabaseHeader {
 public:
-    // Magic bytes identifying a MiniDB database file.
+    // Magic bytes identifying a OCERA database file.
     static constexpr char kMagic[4] = {'M', 'D', 'B', '1'};
     // Current on-disk format version this build reads and writes.
     static constexpr std::uint32_t kCurrentVersion = 1;
@@ -46,4 +46,4 @@ private:
     void Flush() const;
 };
 
-}  // namespace minidb
+}  // namespace ocera

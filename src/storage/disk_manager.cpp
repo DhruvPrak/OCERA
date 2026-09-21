@@ -2,7 +2,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace minidb {
+namespace ocera {
 
 DiskManager::DiskManager(const std::string& db_file) : file_name_(db_file) {
     // Try opening an existing file first.
@@ -76,4 +76,4 @@ void DiskManager::WritePage(page_id_t page_id, const char* page_data) {
     }
 }
 
-}  // namespace minidb
+}  // namespace ocera

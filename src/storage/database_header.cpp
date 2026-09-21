@@ -3,7 +3,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace minidb {
+namespace ocera {
 
 namespace {
 
@@ -69,7 +69,7 @@ void DatabaseHeader::Load() {
 
     if (std::memcmp(buf + kMagicOffset, kMagic, sizeof(kMagic)) != 0) {
         throw std::runtime_error(
-            "DatabaseHeader: not a valid MiniDB file (magic number mismatch)");
+            "DatabaseHeader: not a valid OCERA file (magic number mismatch)");
     }
 
     version_ = ReadU32LE(buf, kVersionOffset);
@@ -90,4 +90,4 @@ void DatabaseHeader::Load() {
     catalog_root_page_id_ = static_cast<page_id_t>(ReadU32LE(buf, kCatalogRootOffset));
 }
 
-}  // namespace minidb
+}  // namespace ocera

@@ -1,4 +1,4 @@
-# Onboarding: Get MiniDB running on your machine
+# Onboarding: Get OCERA running on your machine
 
 You have two options. **Docker is recommended** - it gives everyone the exact
 same compiler/tools regardless of OS, and avoids a couple of gotchas we hit
@@ -20,7 +20,7 @@ setting this up natively on Windows (see bottom of this doc).
 ```bash
 git clone <REPO_URL>
 ```
-Open the resulting `MiniDB` folder in VS Code.
+Open the resulting `OCERA` folder in VS Code.
 
 ### 3. Reopen in container
 A popup should appear: *"Folder contains a Dev Container configuration.
@@ -28,7 +28,7 @@ Reopen in Container?"* - click it.
 If it doesn't appear: `Ctrl+Shift+P` -> "Dev Containers: Reopen in Container".
 
 First time takes 1-3 minutes (builds the image). You'll know it worked when
-the bottom-left corner of VS Code says **"Dev Container: MiniDB Dev
+the bottom-left corner of VS Code says **"Dev Container: OCERA Dev
 Environment"**.
 
 ### 4. Build and verify
@@ -37,7 +37,7 @@ Open a terminal inside VS Code (now a Linux shell) and run:
 mkdir -p build && cd build
 cmake -G "Unix Makefiles" ..
 cmake --build .
-./minidb
+./ocera
 ```
 You should see: `Environment OK - threads + mutex working correctly.`
 
@@ -63,7 +63,7 @@ Variables), open a **fresh** terminal, then:
 mkdir build && cd build
 cmake -G "MinGW Makefiles" ..
 cmake --build .
-./minidb.exe
+./ocera.exe
 ```
 
 **Mac:** `brew install cmake gdb` (Xcode Command Line Tools give you g++/clang).
@@ -75,7 +75,7 @@ Then on Mac/Linux:
 mkdir build && cd build
 cmake ..
 cmake --build .
-./minidb
+./ocera
 ```
 
 ---

@@ -3,7 +3,7 @@
 #include <cstring>
 #include "config.h"
 
-namespace minidb {
+namespace ocera {
 
 // A page id uniquely identifies a fixed-size slot in the database file.
 // -1 is reserved to mean "no page" / "invalid", the same convention SQLite
@@ -21,4 +21,4 @@ struct Page {
     Page() { std::memset(data, 0, PAGE_SIZE); }
 };
 
-}  // namespace minidb
+}  // namespace ocera

@@ -2,7 +2,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace minidb {
+namespace ocera {
 
 FreeSpaceManager::FreeSpaceManager(DiskManager& disk_manager)
     : disk_manager_(disk_manager), bitmap_(PAGE_SIZE, 0) {
@@ -81,4 +81,4 @@ bool FreeSpaceManager::IsAllocated(page_id_t page_id) const {
     return GetBit(page_id);
 }
 
-}  // namespace minidb
+}  // namespace ocera

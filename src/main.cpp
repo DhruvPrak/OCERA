@@ -14,7 +14,7 @@ void increment_many_times(int times) {
 }
 
 int main() {
-    std::cout << "MiniDB environment check starting...\n";
+    std::cout << "OCERA environment check starting...\n";
 
     const int num_threads = 4;
     const int increments_per_thread = 50000;

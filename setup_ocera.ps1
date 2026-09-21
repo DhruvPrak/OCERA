@@ -1,10 +1,10 @@
-# setup_minidb.ps1
-# Run this from inside your MiniDB repo folder:
-#   .\setup_minidb.ps1
+# setup_ocera.ps1
+# Run this from inside your OCERA repo folder:
+#   .\setup_ocera.ps1
 # It creates the full skeleton: CMakeLists.txt, src/main.cpp, .gitignore,
 # README.md, per-module placeholder READMEs, and .vscode/extensions.json.
 
-Write-Host "Creating MiniDB skeleton in $(Get-Location) ..."
+Write-Host "Creating OCERA skeleton in $(Get-Location) ..."
 
 # --- folders ---
 $folders = @(
@@ -18,7 +18,7 @@ foreach ($f in $folders) {
 # --- CMakeLists.txt ---
 @'
 cmake_minimum_required(VERSION 3.15)
-project(MiniDB CXX)
+project(OCERA CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,8 +29,8 @@ endif()
 
 find_package(Threads REQUIRED)
 
-add_executable(minidb src/main.cpp)
-target_link_libraries(minidb PRIVATE Threads::Threads)
+add_executable(ocera src/main.cpp)
+target_link_libraries(ocera PRIVATE Threads::Threads)
 '@ | Set-Content -Path "CMakeLists.txt" -Encoding UTF8
 
 # --- src/main.cpp ---
@@ -51,7 +51,7 @@ void increment_many_times(int times) {
 }
 
 int main() {
-    std::cout << "MiniDB environment check starting...\n";
+    std::cout << "OCERA environment check starting...\n";
 
     const int num_threads = 4;
     const int increments_per_thread = 50000;
@@ -120,7 +120,7 @@ Thumbs.db
 
 # --- README.md ---
 @'
-# MiniDB
+# OCERA
 
 A concurrent, crash-proof embedded database engine, built from scratch to
 demonstrate core Operating Systems and DBMS concepts.
@@ -132,10 +132,10 @@ mkdir build
 cd build
 cmake -G "MinGW Makefiles" ..
 cmake --build .
-./minidb.exe
+./ocera.exe
 ```
 
-If everything is set up correctly, minidb.exe runs a threading sanity
+If everything is set up correctly, ocera.exe runs a threading sanity
 check and prints "Environment OK - threads + mutex working correctly."
 '@ | Set-Content -Path "README.md" -Encoding UTF8
 

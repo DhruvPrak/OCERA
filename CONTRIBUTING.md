@@ -1,4 +1,4 @@
-# Contributing to MiniDB
+# Contributing to OCERA
 
 Simple rules so three people can work on the same repo without stepping on
 each other's code.
@@ -59,7 +59,7 @@ Keep them short and describe *what changed*, not "fixed stuff":
 Whoever is doing this (each teammate, once):
 ```bash
 git clone <REPO_URL>
-cd MiniDB
+cd OCERA
 git checkout -b feature/<yourmodule>   # e.g. feature/txn
 git push -u origin feature/<yourmodule>
 ```
