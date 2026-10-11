@@ -51,8 +51,14 @@ bool LockManager::Acquire(txn_id_t txn_id, ResourceId resource,
     while (true) {
         // table_ may rehash while we sleep, so look the state up each time.
         LockState& s = table_[resource];
+        auto mine = std::find_if(s.queue.begin(), s.queue.end(), is_mine);
+        if (mine == s.queue.end()) {
+            // Our request vanished: someone called ReleaseAllLocks() for us
+            // while we slept. Treat it as an abort.
+            return false;
+        }
         if (aborted_.count(txn_id)) {
-            s.queue.erase(std::find_if(s.queue.begin(), s.queue.end(), is_mine));
+            s.queue.erase(mine);
             cv_.notify_all();  // others queued behind us may now proceed
             return false;
         }
