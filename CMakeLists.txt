@@ -27,3 +27,11 @@ target_link_libraries(test_storage PRIVATE ocera_storage)
 
 add_executable(test_header tests/test_header.cpp)
 target_link_libraries(test_header PRIVATE ocera_storage)
+# SQL front-end (tokenizer, later parser).
+add_library(ocera_sql
+    src/sql/tokenizer.cpp
+)
+target_include_directories(ocera_sql PUBLIC src)
+
+add_executable(test_tokenizer tests/test_tokenizer.cpp)
+target_link_libraries(test_tokenizer PRIVATE ocera_sql)
