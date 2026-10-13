@@ -1,8 +1,8 @@
 # OCERA — Project Brief
 
-**Last reconciled:** 2026-10-10  
-**Repository:** https://github.com/DhruvPrak/OCERA  
-**Primary branch:** `main`  
+**Last reconciled:** 2026-10-10
+**Repository:** https://github.com/DhruvPrak/OCERA
+**Primary branch:** `main`
 **Project:** four-month, three-person Semester V CSE project combining Operating Systems and DBMS.
 
 ## What is OCERA?

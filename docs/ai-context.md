@@ -1,6 +1,6 @@
 # OCERA — AI Context for Claude Projects
 
-**Last reconciled:** 2026-10-10  
+**Last reconciled:** 2026-10-10
 **Repository/source of truth:** https://github.com/DhruvPrak/OCERA
 
 ## What this project is

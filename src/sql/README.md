@@ -1,7 +1,7 @@
 # SQL, Indexing and Recovery Module
 
-**Owner:** Ishika Singh  
-**Planned delivery:** SQL/indexing foundation in Month 2; WAL/recovery in Month 4  
+**Owner:** Ishika Singh
+**Planned delivery:** SQL/indexing foundation in Month 2; WAL/recovery in Month 4
 **Status:** Not implemented yet; this file documents planned scope only.
 
 ## Responsibilities

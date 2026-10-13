@@ -1,7 +1,7 @@
 # Transaction and Concurrency Module
 
-**Owner:** Bhavya Goel  
-**Planned delivery:** Month 3  
+**Owner:** Bhavya Goel
+**Planned delivery:** Month 3
 **Status:** Not implemented yet; this file documents planned scope only.
 
 ## Responsibilities
