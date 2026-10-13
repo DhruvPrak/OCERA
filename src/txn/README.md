@@ -2,7 +2,7 @@
 
 **Owner:** Bhavya Goel
 **Planned delivery:** Month 3
-**Status:** Not implemented yet; this file documents planned scope only.
+**Status:** Implemented on `feature/concurrency`; not yet integrated into `main`. Transaction and lock manager tests have passed on the feature branch. Deadlock cycle detection is not yet verified.
 
 ## Responsibilities
 - Transaction lifecycle: begin, commit and abort

@@ -27,14 +27,6 @@ Not implemented or not yet verified: Buffer Pool/LRU, B+Tree, records/tables/Cat
 
 Ownership and delivery schedule are separate. WAL/recovery responsibilities and the Month 4 handoff must be confirmed by all three teammates.
 
-## Team ownership and schedule
-
-- **Dhruv Prakash:** storage engine (Month 1 complete), Buffer Pool/LRU (Month 2), integration coordination.
-- **Ishika Singh:** B+Tree/indexing, records/tables/Catalog and SQL front-end (Month 2); primary WAL/recovery owner under current assignment (Month 4).
-- **Bhavya Goel:** Transaction Manager, Lock Manager, 2PL, deadlock detection and concurrency tests (Month 3).
-
-Ownership is not the same as month number. Dhruv owns the Buffer Pool even though it is Month 2 work. Ishika's exact Month 4 handoff with Bhavya/Dhruv must be coordinated because recovery depends on transaction and storage contracts.
-
 ## Which documents to trust
 
 - `docs/project-brief.md`: status, scope and four-month roadmap.

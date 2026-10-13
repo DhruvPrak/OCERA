@@ -12,16 +12,20 @@ OCERA is a small educational embedded database engine built in C++ to demonstrat
 
 ## Current status (2026-10-10)
 
-**Month 1 storage foundation is implemented and merged into `main`.** The current working storage layer includes a 4 KiB page type, disk I/O, a free-space bitmap, and a database header. The storage and header tests have passed in the reported clean build.
+**Month 1 storage foundation is integrated into `main`.** The storage and header tests have passed in the reported build.
 
-Not yet implemented: Buffer Pool/LRU, B+Tree, record/table and catalog layers, SQL parsing/execution, transaction and lock management, deadlock detection, WAL, checkpointing, and crash recovery. Treat these as planned work, not existing functionality.
+**Implemented on feature branches, not yet integrated into `main`:**
+- Bhavya: Transaction Manager and Lock Manager; tests passed on `feature/concurrency`.
+- Ishika: SQL tokenizer; tests passed on `feature/indexing-sql`.
+
+**Not yet implemented or verified:** Buffer Pool/LRU, B+Tree, full SQL parser/executor, verified deadlock cycle detection, WAL, checkpointing, crash recovery and full integration.
 
 ## Team ownership
 
 | Teammate | Primary ownership | Main delivery window |
 |---|---|---|
 | Dhruv Prakash — team lead | Storage engine, Buffer Pool Manager/LRU, integration coordination | Month 1 storage (done); Buffer Pool in Month 2; ongoing integration |
-| Ishika Singh | B+Tree/indexing, table/catalog and SQL front-end; primary owner for WAL/recovery unless the team revises this | Month 2 for indexing/SQL foundation; Month 4 for WAL/recovery |
+| Ishika Singh | B+Tree/indexing, table/catalog and SQL front-end; WAL/recovery ownership pending team confirmation | Month 2 for indexing/SQL; Month 4 recovery owner to be confirmed |
 | Bhavya Goel | Transaction Manager, Lock Manager, 2PL, deadlock detection and concurrency tests | Month 3 |
 
 **Ownership and schedule are different:** a month describes the planned delivery/integration window, not exclusive ownership of everything listed in that month. For example, Dhruv owns the Buffer Pool even though its delivery is in Month 2.
@@ -33,7 +37,7 @@ Not yet implemented: Buffer Pool/LRU, B+Tree, record/table and catalog layers, S
 | Month 1 — complete | Page-based storage, DiskManager, free-space bitmap/allocation, database header, storage/header tests |
 | Month 2 | Buffer Pool + LRU (Dhruv); B+Tree, records/tables, Catalog and SQL front-end foundation (Ishika) |
 | Month 3 | Transaction lifecycle, locking/2PL, deadlock detection/recovery, concurrency tests (Bhavya) |
-| Month 4 | WAL, checkpointing, crash recovery, full integration, benchmarks, documentation and demo (Ishika primary for recovery; shared integration) |
+| Month 4 | WAL, checkpointing, crash recovery, full integration, benchmarks, documentation and demo (recovery owner pending team confirmation; shared integration) |
 
 The team may work in parallel. Each module must use the shared contracts in `docs/api-contracts.md`, and any cross-module contract change must be reviewed before implementation diverges.
 
