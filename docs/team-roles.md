@@ -25,7 +25,7 @@ Ownership and schedule are separate concepts. The monthly roadmap states when a 
 
 - Implement B+Tree/indexing and the minimum record/table layout and Catalog needed for basic single-table CRUD.
 - Implement a deliberately small SQL subset and its execution path; don't promise full SQL compatibility.
-- Own WAL, checkpointing and crash recovery under the current plan. Coordinate log-record needs with Bhavya and page-flush needs with Dhruv.
+- Current assignment: own WAL, checkpointing and crash recovery, pending explicit confirmation by all three teammates. Coordinate log-record needs with Bhavya and page-flush needs with Dhruv.
 - Agree on page formats, transaction hooks and recovery interfaces before implementing code that depends on them.
 
 ### Bhavya — Transactions and Concurrency

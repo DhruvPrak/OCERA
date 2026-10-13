@@ -23,7 +23,7 @@ This log distinguishes decisions evidenced by the current implementation from ch
 | P-01 | Use LRU for Buffer Pool replacement | Simple, understandable baseline for the project | Buffer Pool | Proposed |
 | P-02 | Keep pin count, dirty flag and replacement metadata outside persisted page bytes | Prevent runtime metadata from corrupting on-disk format | Buffer Pool | Proposed; strong implementation guidance |
 | P-03 | Use page-level locking for initial concurrency implementation | Aligns with page-based storage and keeps lock-resource model simple | Transactions, table/index operations | Proposed |
-| P-04 | Use Strict Two-Phase Locking | Straightforward educational approach; locks held until commit/abort | Lock Manager, Transaction Manager | Proposed |
+| P-04 | Use Strict Two-Phase Locking | Locks are retained until transaction completion | Lock Manager, Transaction Manager | Implemented in `feature/concurrency`; tests passed; formal team approval status to be confirmed |
 | P-05 | Use wait-for graph cycle detection for deadlocks | Directly demonstrates OS/DBMS deadlock concepts | Lock Manager, Transaction Manager | Proposed |
 | P-06 | Limit SQL to basic single-table CRUD and simple predicates; joins are stretch | Protect four-month scope | SQL, executor, tests | Proposed |
 | P-07 | Define a minimal record/table-page format and a Catalog before B+Tree/SQL integration | These formats are not implemented yet | Tables, Catalog, B+Tree, SQL | Proposed |
