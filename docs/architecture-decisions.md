@@ -39,7 +39,7 @@ This log distinguishes decisions evidenced by the current implementation from ch
 - [ ] Concurrency: lock granularity, whether conflicting lock requests block, transaction states, strict vs. basic 2PL, deadlock victim policy.
 - [ ] Durability: WAL record format, before/after image strategy, redo/undo scope, commit flush policy, page LSNs, checkpoint algorithm and recovery startup sequence.
 - [ ] Header format: byte order and compatibility policy for future versions; avoid changing version 1 layout without a documented versioning plan.
-- [ ] Team timing: Ishika's recovery ownership remains the current role assignment, but exact Month 4 integration handoff should be confirmed by all three.
+- [ ] Team timing: WAL/recovery ownership and the Month 4 integration handoff must be confirmed by all three teammates.
 
 ## Rules for recording decisions
 

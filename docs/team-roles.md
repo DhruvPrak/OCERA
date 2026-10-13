@@ -7,10 +7,10 @@
 | Member | Role | Primary ownership | Delivery window |
 |---|---|---|---|
 | Dhruv Prakash | Team lead | Storage engine, Buffer Pool Manager/LRU, cross-module integration | Storage Month 1 complete; Buffer Pool Month 2 |
-| Ishika Singh | Module owner | B+Tree/indexing, record/table and Catalog layer, SQL front-end; primary WAL/recovery owner under current assignment | Indexing/SQL Month 2; WAL/recovery Month 4 |
+| Ishika Singh | Module owner | B+Tree/indexing, record/table and Catalog layer, SQL front-end; WAL/recovery ownership pending team confirmation | Indexing/SQL Month 2; WAL/recovery Month 4, owner to be confirmed |
 | Bhavya Goel | Module owner | Transaction Manager, Lock Manager, 2PL, deadlock detection and concurrency tests | Month 3 |
 
-Ownership and schedule are separate concepts. The monthly roadmap states when a module is targeted; the ownership table states who is accountable for it. This reconciles the earlier docs: Dhruv owns the Buffer Pool even though it is Month 2 work; Bhavya owns transaction control in Month 3; Ishika owns SQL/indexing in Month 2 and is the current primary owner for WAL/recovery in Month 4.
+Ownership and schedule are separate concepts. The monthly roadmap states when a module is targeted; the ownership table states who is accountable for it. Dhruv owns the Buffer Pool work targeted for Month 2, Bhavya owns transaction control targeted for Month 3, and Ishika owns SQL/indexing targeted for Month 2. **WAL/recovery ownership and the Month 4 integration handoff must be confirmed by all three teammates.**
 
 ## Work boundaries
 

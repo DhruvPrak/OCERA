@@ -148,7 +148,7 @@ bool GetState(txn_id_t txn_id, TransactionState* state) const;
 
 **Pending:** WAL/undo integration, durable rollback, and recovery testing remain future work. The proposed interface must not be presented as a substitute for the verified C++ interface.
 
-## 8. Lock Manager and deadlock detection — implemented; Bhavya owns it
+## 8. Lock Manager implemented; deadlock detection not yet verified — Bhavya
 
 **Status:** Implemented in `feature/concurrency`; lock manager tests passed. The interface below is verified against `src/txn/lock_manager.h`.
 
@@ -170,7 +170,7 @@ std::vector<std::pair<txn_id_t, txn_id_t>> GetWaitForEdges() const;
 
 **Important:** The Lock Manager exposes the wait-for graph, but this does not by itself mean deadlock detection and recovery are fully integrated with WAL or durable undo/redo.
 
-## 9. WAL and recovery — proposed; Ishika owns it, with Bhavya/Dhruv integration
+## 9. WAL and recovery — proposed; owner pending team confirmation
 
 Proposed responsibilities:
 - Append log records with a monotonically increasing log sequence number (LSN).

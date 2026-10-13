@@ -11,9 +11,21 @@ This is a constrained student project, not a production database. Explain concep
 
 ## Current status
 
-Month 1 storage foundation is in `main`: 4096-byte pages, DiskManager, bitmap-based FreeSpaceManager, DatabaseHeader, and storage/header tests. The previously reported clean build and tests passed, but rerun tests in the current checkout before claiming a fresh verification.
+Month 1 storage foundation is integrated into `main`: 4096-byte pages, DiskManager, bitmap-based FreeSpaceManager, DatabaseHeader, and storage/header tests.
 
-Not implemented yet: Buffer Pool/LRU, B+Tree, records/tables/Catalog, SQL parser/executor, Transaction Manager/Lock Manager, 2PL, deadlock detection, WAL, checkpointing, recovery, full integration and benchmarks.
+The following work is implemented on feature branches but is not yet integrated into `main`:
+- **Bhavya:** Transaction Manager and Lock Manager. Build and tests passed on `feature/concurrency`.
+- **Ishika:** SQL tokenizer. Tokenizer tests passed on `feature/indexing-sql`; the full SQL parser and execution path remain unfinished.
+
+Not implemented or not yet verified: Buffer Pool/LRU, B+Tree, records/tables/Catalog, full SQL parser/executor, integration of the transaction modules into `main`, verified deadlock cycle detection, WAL, checkpointing, crash recovery, full integration and benchmarks.
+
+## Team ownership and schedule
+
+- **Dhruv Prakash:** storage foundation, Buffer Pool/LRU (Month 2), and integration coordination.
+- **Ishika Singh:** B+Tree/indexing, records/tables/Catalog and SQL front-end (Month 2). WAL/recovery ownership is pending confirmation by all three teammates.
+- **Bhavya Goel:** Transaction Manager, Lock Manager, 2PL, deadlock detection and concurrency tests (Month 3).
+
+Ownership and delivery schedule are separate. WAL/recovery responsibilities and the Month 4 handoff must be confirmed by all three teammates.
 
 ## Team ownership and schedule
 
