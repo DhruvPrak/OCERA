@@ -128,42 +128,47 @@ The parser should return a structured statement or a clear parse error; it shoul
 
 Exact AST types and public function signatures should be agreed when the supported grammar is chosen.
 
-## 7. Transaction Manager — proposed; Bhavya owns it
+## 7. Transaction Manager — implemented; Bhavya owns it
 
-Proposed logical API:
+**Status:** Implemented in `feature/concurrency`; transaction manager tests passed. The interface below is verified against `src/txn/transaction_manager.h`.
 
 ```cpp
-using txn_id_t = std::uint64_t;
-txn_id_t BeginTransaction();
-bool CommitTransaction(txn_id_t txn_id);
-bool AbortTransaction(txn_id_t txn_id);
+txn_id_t Begin();
+bool Commit(txn_id_t txn_id);
+bool Abort(txn_id_t txn_id);
+bool Lock(txn_id_t txn_id, ResourceId resource, LockMode mode);
+bool GetState(txn_id_t txn_id, TransactionState* state) const;
 ```
 
-- Transaction IDs are unique for the lifetime of the running engine; persistence/reuse policy is not yet defined.
-- The SQL executor asks the Transaction Manager to begin/commit/abort and passes the transaction ID to operations that need it.
-- Commit/abort must release all locks held by that transaction.
-- Exact error/result types and whether transactions are RAII objects or ID-based remain open.
+- Transaction IDs increase from 1 and are unique within the running engine.
+- `Commit()` and `Abort()` finish an active transaction and release its locks.
+- `Lock()` delegates lock acquisition to the Lock Manager and fails if the transaction is inactive or has been marked as a deadlock victim.
+- `GetState()` reports the transaction state when the ID is known.
+- `Abort()` currently releases locks and records the aborted state; it does not yet undo data changes.
 
-**Important:** abort/rollback semantics depend on the agreed WAL design. Do not claim durable rollback is complete until log records and recovery tests exist.
+**Pending:** WAL/undo integration, durable rollback, and recovery testing remain future work. The proposed interface must not be presented as a substitute for the verified C++ interface.
 
-## 8. Lock Manager and deadlock detection — proposed; Bhavya owns it
+## 8. Lock Manager and deadlock detection — implemented; Bhavya owns it
 
-Proposed logical API:
+**Status:** Implemented in `feature/concurrency`; lock manager tests passed. The interface below is verified against `src/txn/lock_manager.h`.
 
 ```cpp
-enum class LockMode { Shared, Exclusive };
-bool LockShared(txn_id_t txn_id, const ResourceId& resource);
-bool LockExclusive(txn_id_t txn_id, const ResourceId& resource);
+bool LockShared(txn_id_t txn_id, ResourceId resource);
+bool LockExclusive(txn_id_t txn_id, ResourceId resource);
 void ReleaseAllLocks(txn_id_t txn_id);
+void AbortTransaction(txn_id_t txn_id);
+std::vector<std::pair<txn_id_t, txn_id_t>> GetWaitForEdges() const;
 ```
 
-`ResourceId` is deliberately not finalized: the team must choose page-level, table-level, or another granularity before implementation. For the minimum project, page-level locks may be easier to integrate with the page-based engine, but this is a recommendation, not a confirmed decision.
+- Locks are page-resource based in the current implementation.
+- Shared locks can coexist; exclusive locks conflict with other transactions' locks.
+- Conflicting requests wait until they can be granted or the transaction is marked as a deadlock victim.
+- `ReleaseAllLocks()` releases all locks held by a transaction and wakes waiting requests.
+- `AbortTransaction()` marks a transaction as aborted for lock acquisition; the transaction's own thread must then call `Abort()`.
+- `GetWaitForEdges()` provides a snapshot of the wait-for graph for deadlock detection.
+- Strict 2PL behavior is implemented: locks are released together at transaction completion, not incrementally.
 
-- Conflicting requests need a documented wait/block or failure policy.
-- The deadlock detector needs a consistent wait-for graph snapshot or equivalent internal access.
-- Define victim selection and how a victim is aborted.
-- Strict 2PL is a proposal, not a confirmed decision.
-- Tests must cover shared/shared compatibility, shared/exclusive conflict, lock release on commit/abort, and deadlock cycles.
+**Important:** The Lock Manager exposes the wait-for graph, but this does not by itself mean deadlock detection and recovery are fully integrated with WAL or durable undo/redo.
 
 ## 9. WAL and recovery — proposed; Ishika owns it, with Bhavya/Dhruv integration
 
