@@ -1,61 +1,60 @@
 # OCERA — Team Roles & Responsibilities
 
-## Team Members
+**Last reconciled:** 2026-10-10
 
-| Role | Name | GitHub Handle | Primary Module(s) |
+## Team
+
+| Member | Role | Primary ownership | Delivery window |
 |---|---|---|---|
-| Team Lead | _Member 1 (placeholder)_ | _placeholder_ | Storage Engine + Buffer Pool Manager |
-| Member 2 | _Member 2 (placeholder)_ | _placeholder_ | Transaction Manager + Lock Manager + Deadlock Detection |
-| Member 3 | _Member 3 (placeholder)_ | _placeholder_ | SQL Parser + B+Tree Index + WAL/Recovery |
+| Dhruv Prakash | Team lead | Storage engine, Buffer Pool Manager/LRU, cross-module integration | Storage Month 1 complete; Buffer Pool Month 2 |
+| Ishika Singh | Module owner | B+Tree/indexing, record/table and Catalog layer, SQL front-end; WAL/recovery ownership pending team confirmation | Indexing/SQL Month 2; WAL/recovery Month 4, owner to be confirmed |
+| Bhavya Goel | Module owner | Transaction Manager, Lock Manager, 2PL, deadlock detection and concurrency tests | Month 3 |
 
-> Replace placeholder names and GitHub handles once confirmed.
+Ownership and schedule are separate concepts. The monthly roadmap states when a module is targeted; the ownership table states who is accountable for it. Dhruv owns the Buffer Pool work targeted for Month 2, Bhavya owns transaction control targeted for Month 3, and Ishika owns SQL/indexing targeted for Month 2. **WAL/recovery ownership and the Month 4 integration handoff must be confirmed by all three teammates.**
 
-## Module Ownership
+## Work boundaries
 
-### Team Lead — Storage Engine + Buffer Pool
-- Page format and raw disk I/O (read/write fixed-size pages)
-- Free space / page allocation manager
-- Buffer pool with LRU eviction
-- Overall integration and architecture decisions across modules
+### Dhruv — Storage and Buffer Pool
 
-### Member 2 — Transaction Manager + Lock Manager
-- Transaction lifecycle (begin / commit / abort)
-- Two-Phase Locking (2PL) implementation
-- Deadlock detection (wait-for graph, cycle detection, victim selection)
+- Maintain the existing page format, DiskManager, free-space manager and database header.
+- Implement Buffer Pool Manager and replacement policy after agreeing on the API in `docs/api-contracts.md`.
+- Own integration coordination and resolve cross-module API conflicts with the team.
+- Avoid changing the existing on-disk layout without a documented decision and migration/test plan.
 
-### Member 3 — SQL Parser + Indexing + Recovery
-- Mini SQL parser (SELECT, INSERT, UPDATE, DELETE)
-- B+Tree index implementation
-- Write-ahead log (WAL) and checkpointing
-- Crash recovery logic
+### Ishika — Indexing, Tables/Catalog, SQL and Recovery
 
-### Shared Responsibilities (everyone)
-- Writing tests for their own module
-- Contributing to benchmarking (LRU vs FIFO, throughput under load)
-- Final report + architecture diagrams + demo prep
-- Keeping `docs/architecture-decisions.md` and `docs/api-contracts.md` up to date when their
-  module's interface changes
+- Implement B+Tree/indexing and the minimum record/table layout and Catalog needed for basic single-table CRUD.
+- Implement a deliberately small SQL subset and its execution path; don't promise full SQL compatibility.
+- Current assignment: own WAL, checkpointing and crash recovery, pending explicit confirmation by all three teammates. Coordinate log-record needs with Bhavya and page-flush needs with Dhruv.
+- Agree on page formats, transaction hooks and recovery interfaces before implementing code that depends on them.
 
-## Review Rules
-- [ ] Every pull request needs **at least 1 review** from another teammate before merging to `main`
-- [ ] If a PR changes a function signature listed in `api-contracts.md`, update that file **in the
-      same PR**
-- [ ] No direct pushes to `main` — always branch + PR
-- [ ] Branch naming: `feature/<module>-<short-description>` (e.g. `feature/buffer-pool-lru`)
+### Bhavya — Transactions and Concurrency
 
-> _Placeholder: adjust review rules to match how strict your team wants to be — e.g. 2 reviewers
-> for cross-module changes._
+- Implement transaction lifecycle, lock manager, 2PL policy, deadlock detection and focused concurrency tests.
+- Start against the published interface and small mocks if storage, SQL or WAL dependencies are not ready.
+- Coordinate commit/abort hooks with Ishika's WAL/recovery design. Do not invent undo/rollback durability semantics before the team agrees on the WAL contract.
+- Keep transaction code independent of SQL parsing; the SQL executor should call the transaction API.
 
-## Communication Rules
-- **Decisions:** any design decision that affects more than one module goes into
-  `docs/architecture-decisions.md` — not just discussed verbally/in chat and forgotten
-- **Blockers:** if you're stuck on something another module owns, tag that teammate directly
-  rather than guessing at their interface
-- **Sync frequency:** _placeholder — e.g. "short check-in twice a week"_
-- **Where we talk:** _placeholder — e.g. WhatsApp group / Discord server_
-- **Meeting notes:** _placeholder — link to shared notes doc if you keep one_
+## Shared responsibilities
 
-## Milestones & Ownership Checkpoints
-Refer to the 4-month roadmap in `project-brief.md`. Each month, every member should confirm their
-module milestone is met before moving to the next month's work — flag delays early rather than at
-the end.
+- Each owner writes unit tests for their module and documents how to run them.
+- All three contribute to integration tests, benchmarks, diagrams, final report and demo.
+- Any cross-module signature change requires a same-PR update to `docs/api-contracts.md`.
+- Any architectural choice affecting multiple modules must be added to `docs/architecture-decisions.md`.
+- All teammates and their AI assistants should use the same updated documents.
+
+## Git and review rules
+
+- `main` is the shared integration branch. Do not commit directly to it.
+- Work in focused feature branches created from the latest `main`.
+- Open a pull request to `main`; at least one other teammate reviews it.
+- Keep PRs small enough to test and review. Include build/test results.
+- Suggested branches: `feature/buffer-pool`, `feature/index-sql`, `feature/concurrency`, and `feature/wal-recovery`.
+- Existing `feature/storage`, `feature/sql` and `feature/txn` branches were previously found behind `main`; inspect and update them before reuse. Do not assume they contain current code.
+
+## Team checkpoints
+
+1. Approve the proposed interface decisions in `docs/api-contracts.md` and `docs/architecture-decisions.md`.
+2. Each owner confirms scope, files, tests and dependencies before coding.
+3. Review integration-ready PRs against the shared contract.
+4. At each milestone, record what passed, what remains, and any change to the roadmap.
