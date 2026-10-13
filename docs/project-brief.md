@@ -31,15 +31,15 @@ The bitmap uses one 4 KiB page and therefore tracks up to 32,768 page IDs (128 M
 ### Not implemented yet
 
 - Buffer Pool Manager and LRU replacement
-- B+Tree
+- B+Tree indexing
 - Record/page layout, table access and Catalog
-- SQL parser and query execution
-- Transaction lifecycle and Lock Manager
-- Two-Phase Locking (2PL), deadlock detection and concurrency tests
+- SQL parser and query execution (Ishika's tokenizer is implemented and its tests passed; the full parser/execution path remains unfinished)
+- Integration of the Transaction Manager and Lock Manager into `main` (implemented on Bhavya's `feature/concurrency` branch; build and tests passed)
+- Verified, integrated deadlock cycle detection (the Lock Manager exposes wait-for graph and victim-marking hooks, but cycle-detection implementation is not yet verified)
 - Write-Ahead Logging (WAL), checkpointing and crash recovery
 - End-to-end integration, benchmarks and final presentation
 
-The `src/txn/README.md` and `src/sql/README.md` files are module placeholders, not implementations.
+The `src/txn/README.md` and `src/sql/README.md` files describe module scope; their presence alone does not establish that a complete module has been integrated into `main`.
 
 ## Team ownership versus delivery schedule
 
@@ -48,10 +48,10 @@ Ownership means the teammate is accountable for a module. The roadmap month is t
 | Owner | Owned work | Planned delivery |
 |---|---|---|
 | Dhruv Prakash | Storage engine; Buffer Pool Manager/LRU; integration coordination | Storage in Month 1 (complete); Buffer Pool in Month 2 |
-| Ishika Singh | B+Tree/indexing; records/tables, Catalog and SQL front-end; primary owner for WAL/recovery unless revised by the team | Indexing/SQL foundation in Month 2; WAL/recovery in Month 4 |
+Ishika Singh | B+Tree/indexing; records/tables, Catalog and SQL front-end; WAL/recovery ownership pending team confirmation
 | Bhavya Goel | Transaction Manager, Lock Manager, 2PL, deadlock detection and concurrency tests | Month 3; can develop against mock interfaces while other modules are unfinished |
 
-Month 4 recovery is dependent on storage and transaction interfaces. Ishika owns recovery implementation under the current role assignment; Dhruv supports storage integration and Bhavya supports transaction/recovery semantics. Confirm this division at the next team sync.
+Month 4 recovery depends on the storage and transaction interfaces. Dhruv supports storage integration, and Bhavya supports transaction/recovery semantics. The primary owner for WAL and recovery must be confirmed by all three teammates before implementation begins.
 
 ## Four-month roadmap
 
