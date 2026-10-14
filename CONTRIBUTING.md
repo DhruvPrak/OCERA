@@ -1,65 +1,76 @@
 # Contributing to OCERA
 
-Simple rules so three people can work on the same repo without stepping on
-each other's code.
+These rules let three people work in parallel without accidentally breaking one another's code.
 
 ## Branch layout
 
-- `main` - always buildable. Nobody commits directly here.
-- `feature/storage` - Team Lead's work (pages, disk I/O, buffer pool/LRU)
-- `feature/txn` - Member 2's work (transaction manager, 2PL, deadlock detection)
-- `feature/sql` - Member 3's work (SQL parser, B+Tree, WAL/recovery)
+- `main` — shared integration branch; should build and pass existing tests.
+- Use a focused branch from the latest `main`, for example:
+  - `feature/buffer-pool` — Dhruv
+  - `feature/index-sql` — Ishika
+  - `feature/concurrency` — Bhavya
+  - `feature/wal-recovery` — Ishika, when that phase begins
+  - `docs/reconcile-status-interfaces` — shared documentation work
 
-Cross-cutting or shared changes (e.g. something in `src/common/`) can go
-through a short-lived branch like `feature/common-<thing>`.
+Existing branches named `feature/storage`, `feature/sql` and `feature/txn` have previously been observed behind `main`. Compare them with the latest `main` before reusing them. Never assume an old branch is current.
+
+## Before starting work
+
+```bash
+git checkout main
+git pull origin main
+git checkout -b feature/<module-name>
+```
+
+If the branch already exists, switch to it and bring it up to date with `main` after checking for local changes. Do not delete or overwrite teammates' work.
+
+Read:
+- `docs/project-brief.md`
+- `docs/team-roles.md`
+- `docs/api-contracts.md`
+- `docs/architecture-decisions.md`
+
+Confirm your module's contract and tests before coding.
 
 ## Daily workflow
 
 ```bash
-# 1. Make sure your local main is up to date before starting work
-git checkout main
-git pull
-
-# 2. Switch to your feature branch (create it once, reuse after)
-git checkout feature/storage        # or feature/txn / feature/sql
-
-# 3. Bring in anything new that landed on main since you last synced
-git merge main
-# (resolve any conflicts here if they come up)
-
-# 4. Do your work, then commit as usual
-git add .
-git commit -m "Implement page read/write to disk"
-git push
-
-# 5. When a chunk of work is ready to share with the team,
-#    open a Pull Request on GitHub: feature/storage -> main
-#    Ask one teammate to glance at it, then merge.
+git status
+git add <specific-files>
+git commit -m "Describe the change"
+git push -u origin feature/<module-name>
 ```
 
-## Commit messages
+Open a pull request into `main` when a coherent, tested change is ready. Request at least one teammate review. Include:
+- What changed and why
+- Build and test commands run
+- Test outcomes
+- Any API or architecture decision changes
+- Follow-up work or known limitations
 
-Keep them short and describe *what changed*, not "fixed stuff":
-- Good: `Add LRU eviction to buffer pool manager`
-- Good: `Fix off-by-one in page offset calculation`
-- Avoid: `update`, `wip`, `changes`
+## Cross-module changes
 
-## Pull Requests
+If a public interface changes, update `docs/api-contracts.md` in the same PR and notify the affected owner. If an architecture decision changes, update `docs/architecture-decisions.md`. Avoid parallel edits to the same shared header without first coordinating.
 
-- Open a PR from your feature branch into `main` whenever a milestone from
-  the roadmap is done (not necessarily every single commit).
-- One other teammate should at least skim it before merging - catching a
-  bug in review is much cheaper than catching it during integration in
-  Month 3/4.
-- After merging, everyone else should `git checkout main && git pull` then
-  `git merge main` into their own feature branch, to stay in sync.
+## Build and test
 
-## Setting up your branch for the first time
+In the Linux container from the repository root:
 
-Whoever is doing this (each teammate, once):
 ```bash
-git clone <REPO_URL>
-cd OCERA
-git checkout -b feature/<yourmodule>   # e.g. feature/txn
-git push -u origin feature/<yourmodule>
+mkdir -p build && cd build
+cmake -G "Unix Makefiles" ..
+cmake --build .
+./ocera
+./test_storage
+./test_header
 ```
+
+Use the Windows native instructions in `ONBOARDING.md` if not building in Docker. Do not claim tests passed unless you ran them and saw the result.
+
+## Commit and merge rules
+
+- No direct pushes to `main`.
+- Keep commits focused and descriptive.
+- At least one other teammate reviews each PR.
+- Merge only after required tests pass and contract/docs changes are included.
+- After a merge, update local `main` and rebase/merge it into your working branch as appropriate; resolve conflicts carefully rather than force-pushing over shared work.
