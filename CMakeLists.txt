@@ -32,6 +32,7 @@ target_link_libraries(test_header PRIVATE ocera_storage)
 add_library(ocera_txn
     src/txn/lock_manager.cpp
     src/txn/transaction_manager.cpp
+    src/txn/deadlock_detector.cpp
 )
 target_include_directories(ocera_txn PUBLIC src)
 target_link_libraries(ocera_txn PUBLIC Threads::Threads)
@@ -41,3 +42,6 @@ target_link_libraries(test_lock_manager PRIVATE ocera_txn)
 
 add_executable(test_transaction_manager tests/test_transaction_manager.cpp)
 target_link_libraries(test_transaction_manager PRIVATE ocera_txn)
+
+add_executable(test_deadlock_detector tests/test_deadlock_detector.cpp)
+target_link_libraries(test_deadlock_detector PRIVATE ocera_txn)
