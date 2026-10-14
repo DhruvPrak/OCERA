@@ -45,3 +45,6 @@ target_link_libraries(test_transaction_manager PRIVATE ocera_txn)
 
 add_executable(test_deadlock_detector tests/test_deadlock_detector.cpp)
 target_link_libraries(test_deadlock_detector PRIVATE ocera_txn)
+
+add_executable(demo_concurrency demo/demo_concurrency.cpp)
+target_link_libraries(demo_concurrency PRIVATE ocera_txn)
