@@ -35,3 +35,24 @@ target_include_directories(ocera_sql PUBLIC src)
 
 add_executable(test_tokenizer tests/test_tokenizer.cpp)
 target_link_libraries(test_tokenizer PRIVATE ocera_sql)
+
+# Transaction / concurrency module (Bhavya). Independent of storage code.
+add_library(ocera_txn
+    src/txn/lock_manager.cpp
+    src/txn/transaction_manager.cpp
+    src/txn/deadlock_detector.cpp
+)
+target_include_directories(ocera_txn PUBLIC src)
+target_link_libraries(ocera_txn PUBLIC Threads::Threads)
+
+add_executable(test_lock_manager tests/test_lock_manager.cpp)
+target_link_libraries(test_lock_manager PRIVATE ocera_txn)
+
+add_executable(test_transaction_manager tests/test_transaction_manager.cpp)
+target_link_libraries(test_transaction_manager PRIVATE ocera_txn)
+
+add_executable(test_deadlock_detector tests/test_deadlock_detector.cpp)
+target_link_libraries(test_deadlock_detector PRIVATE ocera_txn)
+
+add_executable(demo_concurrency demo/demo_concurrency.cpp)
+target_link_libraries(demo_concurrency PRIVATE ocera_txn)

@@ -1,62 +1,116 @@
 # OCERA — Project Brief
 
+**Last reconciled:** 2026-10-13
+**Repository:** https://github.com/DhruvPrak/OCERA
+**Primary branch:** `main`
+**Project:** Four-month, three-person Semester V CSE project combining Operating Systems and DBMS.
+
 ## What is OCERA?
-OCERA is a small, educational database engine built from scratch by a 3-person student team.
-Think of it as a tiny SQLite — it stores data on disk in pages, supports basic SQL, runs multiple
-transactions safely at once, and can recover from a crash without losing data.
 
-This project is built for a semester V CSE curriculum, combining **Operating Systems** concepts
-(paging, scheduling, synchronization, deadlocks) with **DBMS** concepts (transactions, locking,
-indexing, recovery, ACID).
+OCERA means **Optimized Concurrent & Crash-Resilient Database Engine**. It is a small educational embedded database engine built in C++ to make core database and operating-system concepts visible: fixed-size pages, buffering, indexing, transactions, locking, deadlock handling, logging and recovery.
 
-## Main Goals
-- Never lose data, even if the system crashes mid-operation
-- Handle multiple users/transactions at once without corrupting data
-- Run efficiently on limited memory without slowing down as data grows
-- Make every core DB concept (paging, locking, recovery, indexing) visible and understandable,
-  not hidden inside a massive codebase
+The goal is a credible, testable learning engine—not a production replacement for SQLite. The implementation must remain achievable within the four-month schedule.
 
-## Expected Features
-- [ ] Fixed-size page storage on disk (raw binary files)
-- [ ] Buffer pool manager with LRU page eviction
-- [ ] B+Tree index for fast row lookups
-- [ ] Mini SQL parser supporting SELECT, INSERT, UPDATE, DELETE
-- [ ] Query execution engine (relational algebra: select, project, join)
-- [ ] Transaction manager (begin / commit / abort)
-- [ ] Lock manager with Two-Phase Locking (2PL)
-- [ ] Deadlock detection via wait-for graph + victim selection
-- [ ] Write-Ahead Logging (WAL) + checkpointing
-- [ ] Crash recovery (redo/undo on restart)
-- [ ] Benchmarking: LRU vs FIFO, throughput under concurrent load
+The project aims to support safe concurrent transactions and crash recovery without losing committed data. **WAL and crash recovery are planned features and are not implemented yet.**
 
-> Update the checkboxes as features get built.
+## Current status
 
-## Tech Stack
-- **Language:** C++ (Java acceptable alternative)
-- **Concurrency:** pthreads / `std::thread` with mutexes & semaphores
-- **Storage:** Raw binary files on disk
-- **Build tools:** CMake / Makefile
-- **Version control:** Git + GitHub
-- **Testing:** Custom test scripts + crash simulation (`kill -9` mid-transaction)
+### Completed — Month 1 storage foundation
 
-## Project Scope
+The storage foundation has been merged into `main`. The current code includes:
 
-### In Scope
-- Single-node, single-machine embedded database (not client-server, not distributed)
-- Core CRUD SQL on single tables (joins may be a stretch goal — mark status below)
-- One index type (B+Tree)
-- File-based storage, no networking layer
+- `src/common/config.h`: `PAGE_SIZE = 4096`, bitmap page ID 0 and header page ID 1.
+- `src/common/page.h`: `page_id_t`, `INVALID_PAGE_ID` and a zero-initialized fixed-size `Page`.
+- `src/storage/disk_manager.h/.cpp`: fixed-size page reads/writes and page count.
+- `src/storage/free_space_manager.h/.cpp`: bitmap-based page allocation, deallocation and allocation checks.
+- `src/storage/database_header.h/.cpp`: file magic, version, page-size and catalog-root metadata in reserved page 1.
+- `tests/test_storage.cpp` and `tests/test_header.cpp`, included in CMake.
 
-### Out of Scope (for now)
-- [ ] Distributed / multi-node support
-- [ ] Full SQL standard compliance
-- [ ] Query optimizer beyond basic rule-based choices
-- [ ] Authentication / user permissions
-- [ ] GUI (command-line only)
+**Reported test results:** page allocation returned IDs 2, 3 and 4; page write/read succeeded; a freed page was reused; unwritten page reads returned zeros; and header tests passed. Re-run the build and tests locally before treating a fresh checkout as verified.
 
-> _Placeholder: revisit this list once Month 2 milestones are done — some "out of scope" items
-> may become stretch goals if time allows._
+The bitmap uses one 4 KiB page and therefore tracks up to 32,768 page IDs (128 MiB at 4 KiB per page) in the current design. Larger-file bitmap chaining is future work, not part of the immediate scope.
 
-## Current Status
-- **Phase:** _placeholder — e.g. "Month 1: raw disk I/O + page allocation"_
-- **Last updated:** _placeholder date_
+### Implemented on feature branches, not yet integrated into `main`
+
+- **Transaction Manager and Lock Manager — Bhavya:** implemented on `feature/concurrency`; the build succeeded and both transaction-manager and lock-manager test suites passed in the reviewed branch.
+- **SQL tokenizer — Ishika:** implemented on `feature/indexing-sql`; tokenizer tests passed. The full SQL parser and query-execution path remain unfinished.
+
+These results describe the reviewed feature branches. They do not mean those implementations have already been merged into `main`.
+
+### Not implemented or not yet verified
+
+- Buffer Pool Manager and LRU replacement.
+- B+Tree indexing.
+- Record/page layout, table access and Catalog.
+- Full SQL parser and query execution.
+- Integration of the Transaction Manager and Lock Manager into `main`.
+- Verified deadlock cycle detection. The Lock Manager exposes wait-for graph and victim-marking hooks, but the actual cycle-detection implementation has not been verified.
+- Write-Ahead Logging (WAL), checkpointing and crash recovery.
+- End-to-end integration, benchmarks and final presentation.
+
+The `src/txn/README.md` and `src/sql/README.md` files describe module scope; their presence alone does not establish that complete modules have been integrated into `main`.
+
+## Team ownership versus delivery schedule
+
+Ownership means the teammate is accountable for a module. The roadmap month is the target window for building and integrating it; the roadmap does not reassign ownership.
+
+| Owner | Owned work | Planned delivery |
+|---|---|---|
+| Dhruv Prakash | Storage engine; Buffer Pool Manager/LRU; integration coordination | Storage in Month 1 (complete); Buffer Pool in Month 2 |
+| Ishika Singh | B+Tree/indexing; records/tables, Catalog and SQL front-end | Indexing/SQL foundation in Month 2; WAL/recovery ownership pending team confirmation |
+| Bhavya Goel | Transaction Manager, Lock Manager, 2PL, deadlock detection and concurrency tests | Month 3; can develop against agreed mock interfaces while other modules are unfinished |
+
+Month 4 recovery depends on the storage and transaction interfaces. Dhruv supports storage integration, and Bhavya supports transaction/recovery semantics. **The primary owner for WAL and recovery must be confirmed by all three teammates before implementation begins.**
+
+## Four-month roadmap
+
+| Month | Milestones | Exit evidence |
+|---|---|---|
+| 1 — Storage foundation | Page-based file layout, DiskManager, free-space management, allocation and database header | Build succeeds; storage/header tests pass — reported complete |
+| 2 — Buffering, indexing and SQL foundation | Buffer Pool/LRU (Dhruv); B+Tree, records/tables, Catalog and parser/front-end (Ishika) | Unit tests for pin/unpin, eviction, index operations, Catalog and supported SQL subset |
+| 3 — Concurrency control | Transaction begin/commit/abort, Lock Manager, 2PL, synchronization and deadlock detection/recovery | Tests for conflicting transactions, serializable schedules, lock release and deadlock cases |
+| 4 — Durability and wrap-up | WAL, checkpointing, crash recovery, integration, benchmarks, documentation and demo | Crash/restart tests, end-to-end tests, recorded benchmark results and final report |
+
+Parallel work is allowed, but integration must follow agreed APIs. Do not make multiple modules depend on invented signatures.
+
+## Scope
+
+### Minimum viable project
+
+- Single-process, single-machine embedded database with file-based storage.
+- Fixed 4 KiB pages.
+- A buffer pool with a simple replacement policy.
+- One index type: B+Tree.
+- Basic single-table CRUD SQL: `SELECT`, `INSERT`, `UPDATE` and `DELETE`.
+- Transaction lifecycle and lock-based concurrency control.
+- WAL, checkpointing and recovery sufficient to demonstrate a crash-recovery scenario.
+- Automated unit and integration tests.
+
+### Stretch goals — only if the core works
+
+- Joins, broader SQL syntax, query optimization beyond simple rules and additional benchmark comparisons.
+
+### Out of scope
+
+Distributed/multi-node operation, a client-server networking layer, full SQL-standard compliance, authentication/permissions and a GUI.
+
+Do not add a load balancer or a complex query optimizer unless the mentor explicitly changes the scope.
+
+## Tech stack and workflow
+
+- C++17, CMake and standard-library threads/mutexes.
+- Binary database file and fixed-size pages.
+- GitHub repository with feature branches and pull requests.
+- Docker/Dev Containers recommended for a consistent environment; native builds are also supported.
+
+See `ONBOARDING.md` for setup and `CONTRIBUTING.md` for the Git workflow.
+
+## Source of truth
+
+1. Existing code and tests determine what is implemented.
+2. This brief records current status and schedule.
+3. `docs/team-roles.md` records ownership.
+4. `docs/api-contracts.md` records current and proposed cross-module interfaces.
+5. `docs/architecture-decisions.md` records confirmed decisions and open proposals.
+
+A proposal in the API or architecture-decisions document is not a confirmed team decision until the team approves it.

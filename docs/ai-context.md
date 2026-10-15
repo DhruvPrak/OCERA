@@ -1,54 +1,60 @@
-# OCERA — AI Context (for Claude Projects)
+# OCERA — AI Context for Claude Projects
 
-> **Upload this file to your personal Claude Project alongside the other `docs/*.md` files.**
-> It tells Claude what OCERA is and how to behave, so every teammate gets consistent help
-> without re-explaining the project from scratch each time.
+**Last reconciled:** 2026-10-10
+**Repository/source of truth:** https://github.com/DhruvPrak/OCERA
 
-## What This Project Is
-OCERA is a small, educational database engine built by a 3-person student team over 4 months,
-for a semester V CSE curriculum combining **Operating Systems** and **DBMS** concepts. It's not a
-commercial product — it's a learning project meant to make core DB/OS internals (paging, buffer
-pools, locking, deadlocks, WAL, recovery, indexing) visible and understandable by building them
-from scratch in C++.
+## What this project is
 
-Full details live in `docs/project-brief.md`.
+OCERA means **Optimized Concurrent & Crash-Resilient Database Engine**. It is a four-month, three-person Semester V CSE educational database engine in C++17. It demonstrates OS and DBMS topics through implementation: fixed-size pages, disk I/O, free-space management, buffering, indexing, SQL, transactions, locks, deadlocks, WAL and crash recovery.
 
-## How the Team Is Working
-- **Source of truth:** the OCERA GitHub repo — https://github.com/DhruvPrak/OCERA
-- **Each teammate has their own Claude Project**, uploaded with the same `docs/*.md` files, so
-  everyone gets consistent context and answers without a shared paid workspace
-- Work is split by module ownership — see `docs/team-roles.md`
-- Design decisions are logged in `docs/architecture-decisions.md`
-- Module interfaces (function signatures, inputs/outputs) are defined in `docs/api-contracts.md`
+This is a constrained student project, not a production database. Explain concepts in simple language first, then technical detail. Avoid redesigns and stretch goals unless the team explicitly asks.
 
-## Where Decisions Are Stored
-- **All confirmed architecture/design decisions live in `docs/architecture-decisions.md`.**
-- **All module interfaces live in `docs/api-contracts.md`.**
-- These two files are the team's shared memory. If something isn't in there, treat it as
-  **undecided**, not as fact.
+## Current status
 
-## How Claude Should Answer
-- **Explain concepts in simple, plain language first**, then go into technical detail
-  (this is a student project — clarity over jargon)
-- Always check answers against `docs/project-brief.md` for scope, and against the syllabus mapping
-  (OS: paging, scheduling, synchronization, deadlocks / DBMS: transactions, locking, indexing,
-  recovery, ACID) — don't suggest features or complexity outside this scope unless asked
-- When discussing a specific module's interface, refer to `docs/api-contracts.md` rather than
-  inventing new function names or signatures
-- When suggesting a design choice that isn't already in `docs/architecture-decisions.md`,
-  **flag it as a proposal**, not as something already decided — e.g. say "you could consider X for
-  this" rather than assuming X is already the plan
-- If the uploaded docs are out of date or missing something Claude needs, **say so and ask**,
-  rather than guessing team decisions
+Month 1 storage foundation is integrated into `main`: 4096-byte pages, DiskManager, bitmap-based FreeSpaceManager, DatabaseHeader, and storage/header tests.
 
-## Critical Rule
-🚫 **Claude should never invent or assume an architecture decision that isn't documented.**
-If asked "how does our page eviction work?" and LRU isn't confirmed in
-`architecture-decisions.md`, Claude should say that it isn't confirmed yet and ask, rather than
-stating an answer as if it were settled team policy.
+The following work is implemented on feature branches but is not yet integrated into `main`:
+- **Bhavya:** Transaction Manager and Lock Manager. Build and tests passed on `feature/concurrency`.
+- **Ishika:** SQL tokenizer. Tokenizer tests passed on `feature/indexing-sql`; the full SQL parser and execution path remain unfinished.
 
-## Keeping This in Sync
-Whenever `docs/architecture-decisions.md` or `docs/api-contracts.md` changes on GitHub, re-upload
-the updated file to your Claude Project so Claude's context stays current. This file
-(`ai-context.md`) rarely needs to change — it's about *how* Claude should behave, not project
-specifics.
+Not implemented or not yet verified: Buffer Pool/LRU, B+Tree, records/tables/Catalog, full SQL parser/executor, integration of the transaction modules into `main`, verified deadlock cycle detection, WAL, checkpointing, crash recovery, full integration and benchmarks.
+
+## Team ownership and schedule
+
+- **Dhruv Prakash:** storage foundation, Buffer Pool/LRU (Month 2), and integration coordination.
+- **Ishika Singh:** B+Tree/indexing, records/tables/Catalog and SQL front-end (Month 2). WAL/recovery ownership is pending confirmation by all three teammates.
+- **Bhavya Goel:** Transaction Manager, Lock Manager, 2PL, deadlock detection and concurrency tests (Month 3).
+
+Ownership and delivery schedule are separate. WAL/recovery responsibilities and the Month 4 handoff must be confirmed by all three teammates.
+
+## Which documents to trust
+
+- `docs/project-brief.md`: status, scope and four-month roadmap.
+- `docs/team-roles.md`: owner and delivery window for each module.
+- `docs/api-contracts.md`: verified storage APIs and proposed higher-layer contracts.
+- `docs/architecture-decisions.md`: confirmed facts vs proposals and open questions.
+- `CONTRIBUTING.md`: Git workflow.
+
+Existing source and tests establish what is actually implemented. The docs contain proposals for future work; a proposed signature or design is not proof of implementation or team approval.
+
+## How to assist
+
+1. Inspect the latest `main` and relevant files before giving code instructions.
+2. State clearly whether something is **implemented**, **proposed**, **in progress**, or **not yet implemented**.
+3. Use exact existing names from source for implemented APIs. For future APIs, follow `docs/api-contracts.md` only after checking whether the team approved that proposal.
+4. If an API or architecture decision is open, ask the owner/team or offer a clearly labeled proposal; do not silently invent it.
+5. Prefer small, testable C++17 changes. Preserve the existing storage format and working tests unless a change is explicitly agreed.
+6. Give exact build/test commands and expected outcomes. Do not claim tests passed unless they were run.
+7. Do not implement a teammate's module without coordination. Cross-module changes require updating the contract and informing affected owners.
+8. No direct commits to `main`; use a feature branch and pull request.
+
+## Roadmap
+
+- **Month 1 — complete:** page-based storage, DiskManager, free-space management, database header and tests.
+- **Month 2:** Buffer Pool/LRU (Dhruv), B+Tree, records/tables, Catalog and SQL front-end foundation (Ishika).
+- **Month 3:** transactions, locks/2PL, deadlock detection/recovery and concurrency tests (Bhavya).
+- **Month 4:** WAL, checkpointing, crash recovery, integration, benchmarks, documentation and demo (Ishika primary for recovery; all owners support integration).
+
+## Parallel work rule
+
+Before coding against another module, check its API in `docs/api-contracts.md`. Use mocks for independent work if necessary, but do not assume mocks define the final interface until the team approves it. Keep shared documents in sync with merged code.
