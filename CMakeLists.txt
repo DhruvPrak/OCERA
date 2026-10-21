@@ -60,3 +60,12 @@ target_link_libraries(test_deadlock_detector PRIVATE ocera_txn)
 
 add_executable(demo_concurrency demo/demo_concurrency.cpp)
 target_link_libraries(demo_concurrency PRIVATE ocera_txn)
+# B+Tree index (in-memory version for now).
+add_library(ocera_index
+    src/index/bplus_tree.cpp
+)
+target_include_directories(ocera_index PUBLIC src)
+
+add_executable(test_bplus_tree tests/test_bplus_tree.cpp)
+target_link_libraries(test_bplus_tree PRIVATE ocera_index)
+
