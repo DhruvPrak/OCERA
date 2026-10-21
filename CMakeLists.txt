@@ -30,11 +30,15 @@ target_link_libraries(test_header PRIVATE ocera_storage)
 # SQL front-end (tokenizer, later parser).
 add_library(ocera_sql
     src/sql/tokenizer.cpp
+    src/sql/parser.cpp
 )
 target_include_directories(ocera_sql PUBLIC src)
 
 add_executable(test_tokenizer tests/test_tokenizer.cpp)
 target_link_libraries(test_tokenizer PRIVATE ocera_sql)
+
+add_executable(test_parser tests/test_parser.cpp)
+target_link_libraries(test_parser PRIVATE ocera_sql)
 
 # Transaction / concurrency module (Bhavya). Independent of storage code.
 add_library(ocera_txn
