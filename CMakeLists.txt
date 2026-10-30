@@ -33,6 +33,7 @@ add_library(ocera_sql
     src/sql/parser.cpp
 )
 target_include_directories(ocera_sql PUBLIC src)
+target_link_libraries(ocera PRIVATE ocera_sql)
 
 add_executable(test_tokenizer tests/test_tokenizer.cpp)
 target_link_libraries(test_tokenizer PRIVATE ocera_sql)
@@ -75,6 +76,8 @@ add_library(ocera_catalog
     src/catalog/validator.cpp
 )
 target_include_directories(ocera_catalog PUBLIC src)
+target_link_libraries(ocera PRIVATE ocera_catalog)
+
 target_link_libraries(ocera_catalog PUBLIC ocera_sql)
 
 add_executable(test_catalog tests/test_catalog.cpp)
