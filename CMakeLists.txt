@@ -69,3 +69,13 @@ target_include_directories(ocera_index PUBLIC src)
 add_executable(test_bplus_tree tests/test_bplus_tree.cpp)
 target_link_libraries(test_bplus_tree PRIVATE ocera_index)
 
+# Catalog and semantic validation (in-memory). Uses the AST from ocera_sql.
+add_library(ocera_catalog
+    src/catalog/catalog.cpp
+    src/catalog/validator.cpp
+)
+target_include_directories(ocera_catalog PUBLIC src)
+target_link_libraries(ocera_catalog PUBLIC ocera_sql)
+
+add_executable(test_catalog tests/test_catalog.cpp)
+target_link_libraries(test_catalog PRIVATE ocera_catalog)
