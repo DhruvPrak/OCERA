@@ -82,3 +82,6 @@ target_link_libraries(ocera_catalog PUBLIC ocera_sql)
 
 add_executable(test_catalog tests/test_catalog.cpp)
 target_link_libraries(test_catalog PRIVATE ocera_catalog)
+# CLI statement reader tests.
+add_executable(test_statement_reader tests/test_statement_reader.cpp)
+target_include_directories(test_statement_reader PRIVATE src)

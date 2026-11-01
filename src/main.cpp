@@ -3,9 +3,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
 #include "catalog/catalog.h"
 #include "catalog/validator.h"
-
+#include "cli/statement_reader.h"
 #include "sql/parser.h"
 #include "sql/tokenizer.h"
 
@@ -54,66 +55,91 @@ int RunThreadCheck() {
     return 1;
 }
 
+void ProcessSqlStatement(
+    const std::string& sql,
+    ocera::Catalog& catalog
+) {
+    try {
+        const ocera::sql::Statement statement = ocera::sql::Parse(sql);
+
+        // Check the statement against the current in-memory Catalog.
+        ocera::Validate(statement, catalog);
+
+        // CREATE TABLE registers its schema in the Catalog.
+        if (const auto* create =
+                std::get_if<ocera::sql::CreateTableStatement>(&statement)) {
+            catalog.CreateTable(*create);
+
+            std::cout << "Table '" << create->table
+                      << "' registered in the in-memory Catalog.\n";
+        } else {
+            std::cout << "Semantic validation passed.\n";
+            std::cout << "SQL execution is not implemented yet.\n";
+        }
+    } catch (const ocera::SemanticError& error) {
+        std::cout << "Semantic error: " << error.what() << '\n';
+    } catch (const ocera::CatalogError& error) {
+        std::cout << "Catalog error: " << error.what() << '\n';
+    } catch (const ocera::sql::TokenizerError& error) {
+        std::cout << "Lexical error: " << error.what() << '\n';
+    } catch (const ocera::sql::ParseError& error) {
+        std::cout << "Syntax error: " << error.what() << '\n';
+    } catch (const std::exception& error) {
+        std::cout << "Error: " << error.what() << '\n';
+    }
+}
+
 int RunSqlCli() {
     std::string input;
     ocera::Catalog catalog;
-    
+    ocera::cli::StatementReader reader;
 
     std::cout << "OCERA SQL CLI (parse-only mode)\n";
-    std::cout << "Enter a SQL statement, or type exit to quit.\n";
+    std::cout << "Enter SQL statements ending with ';', or type exit to quit.\n";
     std::cout << "SQL execution is not implemented yet.\n\n";
 
     while (true) {
-        std::cout << "OCERA> " << std::flush;
+        if (reader.HasPendingInput()) {
+            std::cout << "...> " << std::flush;
+        } else {
+            std::cout << "OCERA> " << std::flush;
+        }
 
         if (!std::getline(std::cin, input)) {
-            std::cout << "\nExiting OCERA CLI.\n";
-            break;
-        }
+            if (reader.HasPendingInput()) {
+                std::cout << "\nIncomplete SQL statement discarded "
+                             "(missing semicolon).\n";
+            }
 
-        // Ignore empty or whitespace-only input.
-        if (input.find_first_not_of(" \t\r\n") == std::string::npos) {
-            continue;
-        }
-
-        // Recognize the two exit commands.
-        const std::size_t first = input.find_first_not_of(" \t\r\n");
-        const std::size_t last = input.find_last_not_of(" \t\r\n");
-        const std::string command = input.substr(first, last - first + 1);
-
-        if (command == "exit" || command == ".exit") {
             std::cout << "Exiting OCERA CLI.\n";
             break;
         }
 
-        try {
-            const ocera::sql::Statement statement =
-    ocera::sql::Parse(input);
+        // Ignore blank input when no statement is being collected.
+        const std::size_t first = input.find_first_not_of(" \t\r\n");
 
-// Check whether the statement makes sense for the current Catalog.
-ocera::Validate(statement, catalog);
+        if (first == std::string::npos) {
+            if (reader.HasPendingInput()) {
+                reader.AddLine(input);
+            }
+            continue;
+        }
 
-// CREATE TABLE can register its schema in the in-memory Catalog.
-if (const auto* create =
-        std::get_if<ocera::sql::CreateTableStatement>(&statement)) {
-    catalog.CreateTable(*create);
+        const std::size_t last = input.find_last_not_of(" \t\r\n");
+        const std::string command = input.substr(first, last - first + 1);
 
-    std::cout << "Table '" << create->table
-              << "' registered in the in-memory Catalog.\n";
-} else {
-    std::cout << "Semantic validation passed.\n";
-    std::cout << "SQL execution is not implemented yet.\n";
-}
-        } catch (const ocera::SemanticError& error) {
-    std::cout << "Semantic error: " << error.what() << '\n';
-} catch (const ocera::CatalogError& error) {
-    std::cout << "Catalog error: " << error.what() << '\n';
-        } catch (const ocera::sql::TokenizerError& error) {
-            std::cout << "Lexical error: " << error.what() << '\n';
-        } catch (const ocera::sql::ParseError& error) {
-            std::cout << "Syntax error: " << error.what() << '\n';
-        } catch (const std::exception& error) {
-            std::cout << "Error: " << error.what() << '\n';
+        // Exit commands are recognized only when no SQL is pending.
+        if (!reader.HasPendingInput() &&
+            (command == "exit" || command == ".exit")) {
+            std::cout << "Exiting OCERA CLI.\n";
+            break;
+        }
+
+        // One input line can complete multiple SQL statements.
+        const std::vector<std::string> statements = reader.AddLine(input);
+
+        for (const std::string& statement : statements) {
+            ProcessSqlStatement(statement, catalog);
         }
     }
 
