@@ -28,6 +28,18 @@ target_link_libraries(test_storage PRIVATE ocera_storage)
 
 add_executable(test_header tests/test_header.cpp)
 target_link_libraries(test_header PRIVATE ocera_storage)
+# SQL front-end (tokenizer, later parser).
+add_library(ocera_sql
+    src/sql/tokenizer.cpp
+    src/sql/parser.cpp
+)
+target_include_directories(ocera_sql PUBLIC src)
+
+add_executable(test_tokenizer tests/test_tokenizer.cpp)
+target_link_libraries(test_tokenizer PRIVATE ocera_sql)
+
+add_executable(test_parser tests/test_parser.cpp)
+target_link_libraries(test_parser PRIVATE ocera_sql)
 
 add_executable(test_buffer_pool tests/test_buffer_pool.cpp)
 target_link_libraries(test_buffer_pool PRIVATE ocera_storage)
@@ -52,3 +64,22 @@ target_link_libraries(test_deadlock_detector PRIVATE ocera_txn)
 
 add_executable(demo_concurrency demo/demo_concurrency.cpp)
 target_link_libraries(demo_concurrency PRIVATE ocera_txn)
+# B+Tree index (in-memory version for now).
+add_library(ocera_index
+    src/index/bplus_tree.cpp
+)
+target_include_directories(ocera_index PUBLIC src)
+
+add_executable(test_bplus_tree tests/test_bplus_tree.cpp)
+target_link_libraries(test_bplus_tree PRIVATE ocera_index)
+
+# Catalog and semantic validation (in-memory). Uses the AST from ocera_sql.
+add_library(ocera_catalog
+    src/catalog/catalog.cpp
+    src/catalog/validator.cpp
+)
+target_include_directories(ocera_catalog PUBLIC src)
+target_link_libraries(ocera_catalog PUBLIC ocera_sql)
+
+add_executable(test_catalog tests/test_catalog.cpp)
+target_link_libraries(test_catalog PRIVATE ocera_catalog)
