@@ -96,3 +96,25 @@ add_executable(test_record_page
 )
 
 target_link_libraries(test_record_page PRIVATE ocera_record)
+
+# Table Heap
+add_library(ocera_table_heap
+    src/record/table_heap.cpp
+)
+
+target_include_directories(ocera_table_heap PUBLIC src)
+
+target_link_libraries(ocera_table_heap
+    PUBLIC
+        ocera_record
+        ocera_storage
+)
+
+add_executable(test_table_heap
+    tests/test_table_heap.cpp
+)
+
+target_link_libraries(test_table_heap
+    PRIVATE
+        ocera_table_heap
+)
