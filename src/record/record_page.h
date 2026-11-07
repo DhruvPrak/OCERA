@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <utility>
 
 #include "common/page.h"
 #include "common/rid.h"
@@ -24,6 +25,12 @@ public:
 
     static bool Update(Page* page, page_id_t page_id, const RID& rid,
                        const std::vector<std::uint8_t>& record);
+
+    static bool Scan(
+    const Page* page,
+    page_id_t page_id,
+    std::vector<std::pair<RID, std::vector<std::uint8_t>>>* records
+);
 
     static bool Delete(Page* page, page_id_t page_id, const RID& rid);
 

@@ -2,6 +2,7 @@
 
 #include <exception>
 #include <utility>
+#include <vector>
 
 #include "catalog/validator.h"
 #include "sql/parser.h"
@@ -33,6 +34,74 @@ TableSchema MakeSchema(const sql::CreateTableStatement& statement) {
     return schema;
 }
 
+bool CompareValues(
+    const sql::Value& left,
+    sql::CompareOp op,
+    const sql::Value& right
+) {
+    int comparison = 0;
+
+    if (left.type == sql::Value::Type::INTEGER) {
+        comparison =
+            left.int_value < right.int_value ? -1 :
+            left.int_value > right.int_value ? 1 : 0;
+    } else {
+        comparison =
+            left.string_value < right.string_value ? -1 :
+            left.string_value > right.string_value ? 1 : 0;
+    }
+
+    switch (op) {
+        case sql::CompareOp::EQ: return comparison == 0;
+        case sql::CompareOp::NE: return comparison != 0;
+        case sql::CompareOp::LT: return comparison < 0;
+        case sql::CompareOp::GT: return comparison > 0;
+        case sql::CompareOp::LE: return comparison <= 0;
+        case sql::CompareOp::GE: return comparison >= 0;
+    }
+
+    return false;
+}
+
+bool MatchesCondition(
+    const sql::Condition& condition,
+    const TableSchema& schema,
+    const std::vector<sql::Value>& row
+) {
+    // AND groups are evaluated first. OR joins those groups.
+    bool current_and_group = true;
+    bool overall_result = false;
+
+    for (std::size_t i = 0; i < condition.comparisons.size(); ++i) {
+        const auto& comparison = condition.comparisons[i];
+        const int column_index = schema.ColumnIndex(comparison.column);
+
+        if (column_index < 0 ||
+            static_cast<std::size_t>(column_index) >= row.size()) {
+            return false;
+        }
+
+        const bool matches = CompareValues(
+            row[static_cast<std::size_t>(column_index)],
+            comparison.op,
+            comparison.value
+        );
+
+        current_and_group = current_and_group && matches;
+
+        const bool end_of_group =
+            i + 1 == condition.comparisons.size() ||
+            condition.connectors[i] == sql::LogicalOp::OR;
+
+        if (end_of_group) {
+            overall_result = overall_result || current_and_group;
+            current_and_group = true;
+        }
+    }
+
+    return overall_result;
+}
+
 }  // namespace
 
 SqlExecutor::SqlExecutor(Catalog& catalog, BufferPoolManager& bpm)
@@ -43,16 +112,22 @@ SqlExecutor::SqlExecutor(Catalog& catalog, BufferPoolManager& bpm)
 bool SqlExecutor::Execute(
     const std::string& sql_text,
     RID* inserted_rid,
-    std::string* error
+    std::string* error,
+    QueryResult* query_result
 ) {
     ClearError(error);
+
     if (inserted_rid != nullptr) {
         *inserted_rid = RID{};
     }
 
+    if (query_result != nullptr) {
+        *query_result = QueryResult{};
+    }
+
     try {
         const sql::Statement statement = sql::Parse(sql_text);
-        return Execute(statement, inserted_rid, error);
+        return Execute(statement, inserted_rid, error, query_result);
     } catch (const std::exception& exception) {
         SetError(error, exception.what());
         return false;
@@ -62,11 +137,17 @@ bool SqlExecutor::Execute(
 bool SqlExecutor::Execute(
     const sql::Statement& statement,
     RID* inserted_rid,
-    std::string* error
+    std::string* error,
+    QueryResult* query_result
 ) {
     ClearError(error);
+
     if (inserted_rid != nullptr) {
         *inserted_rid = RID{};
+    }
+
+    if (query_result != nullptr) {
+        *query_result = QueryResult{};
     }
 
     if (const auto* create =
@@ -79,10 +160,27 @@ bool SqlExecutor::Execute(
         return ExecuteInsert(*insert, inserted_rid, error);
     }
 
-    SetError(
-        error,
-        "SQL executor currently supports only CREATE TABLE and INSERT"
-    );
+    if (const auto* select =
+            std::get_if<sql::SelectStatement>(&statement)) {
+        if (query_result == nullptr) {
+            QueryResult discarded;
+            return ExecuteSelect(*select, &discarded, error);
+        }
+
+        return ExecuteSelect(*select, query_result, error);
+    }
+
+    if (const auto* update =
+            std::get_if<sql::UpdateStatement>(&statement)) {
+        return ExecuteUpdate(*update, error);
+    }
+
+    if (const auto* remove =
+            std::get_if<sql::DeleteStatement>(&statement)) {
+        return ExecuteDelete(*remove, error);
+    }
+
+    SetError(error, "unsupported SQL statement");
     return false;
 }
 
@@ -98,6 +196,7 @@ bool SqlExecutor::ExecuteCreate(
     }
 
     page_id_t first_page_id = INVALID_PAGE_ID;
+
     if (!TableHeap::Create(bpm_, &first_page_id)) {
         SetError(error, "failed to allocate the table's first record page");
         return false;
@@ -115,20 +214,20 @@ bool SqlExecutor::ExecuteCreate(
         runtime.heap = std::move(heap);
         runtime.record_table = std::move(record_table);
 
-        const auto insertion =
-            tables_.emplace(key, std::move(runtime));
+        const auto insertion = tables_.emplace(key, std::move(runtime));
 
         if (!insertion.second) {
             bpm_.DeletePage(first_page_id);
-            SetError(error, "table storage is already registered for '" +
-                                statement.table + "'");
+            SetError(
+                error,
+                "table storage is already registered for '" +
+                    statement.table + "'"
+            );
             return false;
         }
 
         runtime_registered = true;
 
-        // Register the Catalog schema only after storage is ready. If Catalog
-        // registration fails, remove the runtime objects and release the page.
         try {
             catalog_.CreateTable(statement);
         } catch (...) {
@@ -142,6 +241,7 @@ bool SqlExecutor::ExecuteCreate(
         if (!runtime_registered) {
             bpm_.DeletePage(first_page_id);
         }
+
         SetError(error, exception.what());
         return false;
     }
@@ -173,6 +273,7 @@ bool SqlExecutor::ExecuteInsert(
     }
 
     RID new_rid;
+
     if (!table_it->second.record_table->Insert(
             statement.values, &new_rid, error)) {
         return false;
@@ -183,6 +284,253 @@ bool SqlExecutor::ExecuteInsert(
     }
 
     return true;
+}
+
+bool SqlExecutor::ExecuteSelect(
+    const sql::SelectStatement& statement,
+    QueryResult* query_result,
+    std::string* error
+) {
+    if (query_result == nullptr) {
+        SetError(error, "query result output pointer is null");
+        return false;
+    }
+
+    try {
+        Validate(sql::Statement{statement}, catalog_);
+    } catch (const std::exception& exception) {
+        SetError(error, exception.what());
+        return false;
+    }
+
+    const TableSchema* schema = catalog_.GetTable(statement.table);
+
+    if (schema == nullptr) {
+        SetError(error, "table '" + statement.table + "' does not exist");
+        return false;
+    }
+
+    const auto table_it =
+        tables_.find(NormalizeIdentifier(statement.table));
+
+    if (table_it == tables_.end() ||
+        table_it->second.record_table == nullptr) {
+        SetError(
+            error,
+            "table '" + statement.table +
+                "' has no runtime storage managed by this SQL executor"
+        );
+        return false;
+    }
+
+    std::vector<std::pair<RID, std::vector<sql::Value>>> stored_rows;
+
+    if (!table_it->second.record_table->Scan(&stored_rows, error)) {
+        return false;
+    }
+
+    try {
+        std::vector<std::size_t> projection;
+
+        if (statement.select_all) {
+            for (std::size_t i = 0; i < schema->columns.size(); ++i) {
+                projection.push_back(i);
+            }
+        } else {
+            for (const auto& name : statement.columns) {
+                const int index = schema->ColumnIndex(name);
+
+                if (index < 0) {
+                    SetError(error, "unknown projected column '" + name + "'");
+                    return false;
+                }
+
+                projection.push_back(static_cast<std::size_t>(index));
+            }
+        }
+
+        QueryResult result;
+
+        for (const std::size_t index : projection) {
+            result.column_names.push_back(schema->columns[index].name);
+        }
+
+        for (const auto& stored : stored_rows) {
+            const auto& row = stored.second;
+
+            if (statement.where.has_value() &&
+                !MatchesCondition(*statement.where, *schema, row)) {
+                continue;
+            }
+
+            std::vector<sql::Value> projected_row;
+            projected_row.reserve(projection.size());
+
+            for (const std::size_t index : projection) {
+                projected_row.push_back(row[index]);
+            }
+
+            result.rows.push_back(std::move(projected_row));
+        }
+
+        *query_result = std::move(result);
+        return true;
+    } catch (const std::exception& exception) {
+        SetError(error, exception.what());
+        return false;
+    }
+}
+
+bool SqlExecutor::ExecuteUpdate(
+    const sql::UpdateStatement& statement,
+    std::string* error
+) {
+    try {
+        Validate(sql::Statement{statement}, catalog_);
+    } catch (const std::exception& exception) {
+        SetError(error, exception.what());
+        return false;
+    }
+
+    const TableSchema* schema = catalog_.GetTable(statement.table);
+
+    if (schema == nullptr) {
+        SetError(error, "table '" + statement.table + "' does not exist");
+        return false;
+    }
+
+    const auto table_it =
+        tables_.find(NormalizeIdentifier(statement.table));
+
+    if (table_it == tables_.end() ||
+        table_it->second.record_table == nullptr) {
+        SetError(
+            error,
+            "table '" + statement.table +
+                "' has no runtime storage managed by this SQL executor"
+        );
+        return false;
+    }
+
+    std::vector<std::pair<RID, std::vector<sql::Value>>> stored_rows;
+
+    if (!table_it->second.record_table->Scan(&stored_rows, error)) {
+        return false;
+    }
+
+    try {
+        for (const auto& stored : stored_rows) {
+            const RID& rid = stored.first;
+            const auto& original_row = stored.second;
+
+            if (statement.where.has_value() &&
+                !MatchesCondition(*statement.where, *schema, original_row)) {
+                continue;
+            }
+
+            // Work on a copy so that assignments are applied together
+            // before the row is written back.
+            std::vector<sql::Value> updated_row = original_row;
+
+            for (const auto& assignment : statement.assignments) {
+                const int column_index =
+                    schema->ColumnIndex(assignment.column);
+
+                if (column_index < 0 ||
+                    static_cast<std::size_t>(column_index) >=
+                        updated_row.size()) {
+                    SetError(
+                        error,
+                        "unknown UPDATE column '" + assignment.column + "'"
+                    );
+                    return false;
+                }
+
+                updated_row[static_cast<std::size_t>(column_index)] =
+                    assignment.value;
+            }
+
+            if (!table_it->second.record_table->Update(
+                    rid, updated_row, error)) {
+                if (error != nullptr && error->empty()) {
+                    SetError(error, "failed to update a matching row");
+                }
+                return false;
+            }
+        }
+
+        return true;
+    } catch (const std::exception& exception) {
+        SetError(error, exception.what());
+        return false;
+    }
+}
+
+bool SqlExecutor::ExecuteDelete(
+    const sql::DeleteStatement& statement,
+    std::string* error
+) {
+    try {
+        Validate(sql::Statement{statement}, catalog_);
+    } catch (const std::exception& exception) {
+        SetError(error, exception.what());
+        return false;
+    }
+
+    const TableSchema* schema = catalog_.GetTable(statement.table);
+
+    if (schema == nullptr) {
+        SetError(error, "table '" + statement.table + "' does not exist");
+        return false;
+    }
+
+    const auto table_it =
+        tables_.find(NormalizeIdentifier(statement.table));
+
+    if (table_it == tables_.end() ||
+        table_it->second.record_table == nullptr) {
+        SetError(
+            error,
+            "table '" + statement.table +
+                "' has no runtime storage managed by this SQL executor"
+        );
+        return false;
+    }
+
+    std::vector<std::pair<RID, std::vector<sql::Value>>> stored_rows;
+
+    if (!table_it->second.record_table->Scan(&stored_rows, error)) {
+        return false;
+    }
+
+    try {
+        // Collect matching RIDs before deleting. This keeps the scan result
+        // stable while records are removed from their pages.
+        std::vector<RID> matching_rids;
+        matching_rids.reserve(stored_rows.size());
+
+        for (const auto& stored : stored_rows) {
+            const RID& rid = stored.first;
+            const auto& row = stored.second;
+
+            if (!statement.where.has_value() ||
+                MatchesCondition(*statement.where, *schema, row)) {
+                matching_rids.push_back(rid);
+            }
+        }
+
+        for (const RID& rid : matching_rids) {
+            if (!table_it->second.record_table->Delete(rid)) {
+                SetError(error, "failed to delete a matching row");
+                return false;
+            }
+        }
+
+        return true;
+    } catch (const std::exception& exception) {
+        SetError(error, exception.what());
+        return false;
+    }
 }
 
 bool SqlExecutor::GetRowByRID(
@@ -199,6 +547,7 @@ bool SqlExecutor::GetRowByRID(
     }
 
     const auto table_it = tables_.find(NormalizeIdentifier(table_name));
+
     if (table_it == tables_.end() ||
         table_it->second.record_table == nullptr) {
         SetError(

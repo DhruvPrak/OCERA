@@ -652,5 +652,48 @@ bool RecordPage::SetNextPageId(
 
     return true;
 }
+bool RecordPage::Scan(
+    const Page* page,
+    page_id_t page_id,
+    std::vector<std::pair<RID, std::vector<std::uint8_t>>>* records
+) {
+    if (page == nullptr || page_id < 2 ||
+        records == nullptr || !IsValid(page)) {
+        return false;
+    }
+
+    try {
+        const auto* b = Bytes(page);
+        const auto count = ReadU16(b + kSlotCountOffset);
+
+        std::vector<std::pair<RID, std::vector<std::uint8_t>>> result;
+        result.reserve(count);
+
+        for (std::uint16_t slot = 0; slot < count; ++slot) {
+            if (SlotStatus(b, slot) != kLive) {
+                continue;
+            }
+
+            const auto offset = SlotFieldU16(b, slot, 0);
+            const auto length = SlotFieldU16(b, slot, 2);
+            const auto generation = SlotGeneration(b, slot);
+
+            std::vector<std::uint8_t> payload(
+                b + offset,
+                b + offset + length
+            );
+
+            result.emplace_back(
+                RID{page_id, slot, generation},
+                std::move(payload)
+            );
+        }
+
+        records->swap(result);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 
 }  // namespace ocera

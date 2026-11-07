@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <utility>
 
 #include "catalog/catalog.h"
 #include "common/rid.h"
@@ -15,6 +16,10 @@ namespace ocera {
 // Catalog-owned TableSchema pointer.
 class RecordTable {
 public:
+bool Scan(
+    std::vector<std::pair<RID, std::vector<sql::Value>>>* rows,
+    std::string* error = nullptr
+);
     RecordTable(const TableSchema& schema, TableHeap& heap);
 
     // Values must match the schema's column order and types.

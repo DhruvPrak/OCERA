@@ -33,6 +33,7 @@ void CheckRow(
 ) {
     std::vector<sql::Value> actual;
     std::string error;
+
     assert(executor.GetRowByRID("students", rid, &actual, &error));
     assert(actual.size() == expected.size());
 
@@ -128,7 +129,7 @@ int main() {
             &error
         ));
 
-        std::cout << "[6] Reject malformed SQL and unsupported statements\n";
+        std::cout << "[6] Reject malformed SQL\n";
         assert(!executor.Execute(
             "INSERT INTO students VALUES (1, 'unterminated, 10);",
             &rejected_rid,
@@ -136,17 +137,225 @@ int main() {
         ));
         assert(!error.empty());
 
-        assert(!executor.Execute(
+        std::cout << "[7] SELECT * returns all columns and rows\n";
+        QueryResult result;
+
+        assert(executor.Execute(
             "SELECT * FROM students;",
+            nullptr,
+            &error,
+            &result
+        ));
+
+        assert(result.column_names.size() == 3);
+        assert(result.column_names[0] == "id");
+        assert(result.column_names[1] == "name");
+        assert(result.column_names[2] == "age");
+        assert(result.rows.size() == 2);
+
+        std::cout << "[8] SELECT projection and WHERE filtering\n";
+        assert(executor.Execute(
+            "SELECT name, age FROM students WHERE age >= 21;",
+            nullptr,
+            &error,
+            &result
+        ));
+
+        assert(result.column_names.size() == 2);
+        assert(result.column_names[0] == "name");
+        assert(result.column_names[1] == "age");
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Text("Riya")));
+        assert(SameValue(result.rows[0][1], Int(21)));
+
+        std::cout << "[9] AND is evaluated before OR\n";
+        assert(executor.Execute(
+            "SELECT id FROM students "
+            "WHERE id = 7 OR id = 8 AND age = 21;",
+            nullptr,
+            &error,
+            &result
+        ));
+
+        // Expected: id=7 OR (id=8 AND age=21), so both rows match.
+        assert(result.rows.size() == 2);
+        assert(SameValue(result.rows[0][0], Int(7)));
+        assert(SameValue(result.rows[1][0], Int(8)));
+
+        std::cout << "[10] SELECT with no matching rows\n";
+        assert(executor.Execute(
+            "SELECT * FROM students WHERE age > 100;",
+            nullptr,
+            &error,
+            &result
+        ));
+        assert(result.column_names.size() == 3);
+        assert(result.rows.empty());
+
+        std::cout << "[11] Reject invalid SELECT and clear result\n";
+        assert(!executor.Execute(
+            "SELECT unknown_column FROM students;",
+            nullptr,
+            &error,
+            &result
+        ));
+        assert(!error.empty());
+        assert(result.column_names.empty());
+        assert(result.rows.empty());
+
+        std::cout << "[12] Previously inserted rows remain unchanged\n";
+        CheckRow(executor, rid, {Int(7), Text("Asha"), Int(20)});
+        CheckRow(executor, second_rid, {Int(8), Text("Riya"), Int(21)});
+                std::cout << "[13] UPDATE one matching row\n";
+
+        assert(executor.Execute(
+            "UPDATE students SET age = 22 WHERE id = 7;",
             nullptr,
             &error
         ));
-        assert(error.find("only CREATE TABLE and INSERT") != std::string::npos);
 
-        std::cout << "[7] Previously inserted rows remain unchanged\n";
-        CheckRow(executor, rid, {Int(7), Text("Asha"), Int(20)});
+        CheckRow(executor, rid, {Int(7), Text("Asha"), Int(22)});
         CheckRow(executor, second_rid, {Int(8), Text("Riya"), Int(21)});
 
+        std::cout << "[14] UPDATE multiple columns\n";
+
+        assert(executor.Execute(
+            "UPDATE students SET name = 'Riya Updated', age = 25 "
+            "WHERE id = 8;",
+            nullptr,
+            &error
+        ));
+
+        CheckRow(
+            executor,
+            second_rid,
+            {Int(8), Text("Riya Updated"), Int(25)}
+        );
+
+        std::cout << "[15] UPDATE respects AND-before-OR precedence\n";
+
+        assert(executor.Execute(
+            "UPDATE students SET age = 30 "
+            "WHERE id = 7 OR id = 8 AND age = 25;",
+            nullptr,
+            &error
+        ));
+
+        CheckRow(executor, rid, {Int(7), Text("Asha"), Int(30)});
+        CheckRow(
+            executor,
+            second_rid,
+            {Int(8), Text("Riya Updated"), Int(30)}
+        );
+
+        std::cout << "[16] UPDATE without WHERE affects every row\n";
+
+        assert(executor.Execute(
+            "UPDATE students SET age = 40;",
+            nullptr,
+            &error
+        ));
+
+        CheckRow(executor, rid, {Int(7), Text("Asha"), Int(40)});
+        CheckRow(
+            executor,
+            second_rid,
+            {Int(8), Text("Riya Updated"), Int(40)}
+        );
+
+        std::cout << "[17] Reject invalid UPDATE statements\n";
+
+        assert(!executor.Execute(
+            "UPDATE students SET age = 'wrong';",
+            nullptr,
+            &error
+        ));
+        assert(!error.empty());
+
+        assert(!executor.Execute(
+            "UPDATE students SET unknown_column = 10;",
+            nullptr,
+            &error
+        ));
+        assert(!error.empty());
+
+        assert(!executor.Execute(
+            "UPDATE missing SET age = 10;",
+            nullptr,
+            &error
+        ));
+        assert(!error.empty());
+
+        // Failed validation must not change existing records.
+        CheckRow(executor, rid, {Int(7), Text("Asha"), Int(40)});
+        CheckRow(
+            executor,
+            second_rid,
+            {Int(8), Text("Riya Updated"), Int(40)}
+        );
+
+        std::cout << "[18] DELETE one matching row\n";
+
+        assert(executor.Execute(
+            "DELETE FROM students WHERE id = 7;",
+            nullptr,
+            &error
+        ));
+
+        std::vector<sql::Value> deleted_row;
+        assert(!executor.GetRowByRID("students", rid, &deleted_row, &error));
+
+        CheckRow(
+            executor,
+            second_rid,
+            {Int(8), Text("Riya Updated"), Int(40)}
+        );
+
+        std::cout << "[19] DELETE with no matching rows\n";
+
+        assert(executor.Execute(
+            "DELETE FROM students WHERE id = 999;",
+            nullptr,
+            &error
+        ));
+
+        assert(executor.Execute(
+            "SELECT * FROM students;",
+            nullptr,
+            &error,
+            &result
+        ));
+
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Int(8)));
+
+        std::cout << "[20] DELETE without WHERE removes every row\n";
+
+        assert(executor.Execute(
+            "DELETE FROM students;",
+            nullptr,
+            &error
+        ));
+
+        assert(executor.Execute(
+            "SELECT * FROM students;",
+            nullptr,
+            &error,
+            &result
+        ));
+
+        assert(result.rows.empty());
+        assert(result.column_names.size() == 3);
+
+        std::cout << "[21] Reject DELETE from an unknown table\n";
+
+        assert(!executor.Execute(
+            "DELETE FROM missing;",
+            nullptr,
+            &error
+        ));
+
+        assert(!error.empty());
         bpm.FlushAllPages();
     }
 

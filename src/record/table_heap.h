@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <vector>
+#include <string>
+#include <utility>
 
 #include "common/rid.h"
 #include "record/record_page.h"
@@ -16,6 +18,9 @@ public:
     static bool Create(
         BufferPoolManager& bpm,
         page_id_t* first_page_id
+    );
+    bool Scan(
+    std::vector<std::pair<RID, std::vector<std::uint8_t>>>* records
     );
 
     // Opens an existing heap using its first RecordPage ID.

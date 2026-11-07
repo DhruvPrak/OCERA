@@ -104,4 +104,45 @@ bool RecordTable::Delete(const RID& rid) {
     return heap_.Delete(rid);
 }
 
+bool RecordTable::Scan(
+    std::vector<std::pair<RID, std::vector<sql::Value>>>* rows,
+    std::string* error
+) {
+    ClearError(error);
+
+    if (rows == nullptr) {
+        SetError(error, "row output pointer is null");
+        return false;
+    }
+
+    std::vector<std::pair<RID, std::vector<std::uint8_t>>> encoded_rows;
+
+    if (!heap_.Scan(&encoded_rows)) {
+        SetError(error, "TableHeap failed to scan records");
+        return false;
+    }
+
+    try {
+        std::vector<std::pair<RID, std::vector<sql::Value>>> result;
+        result.reserve(encoded_rows.size());
+
+        for (const auto& item : encoded_rows) {
+            std::vector<sql::Value> values;
+
+            if (!RecordSerializer::Decode(
+                    schema_, item.second, &values, error)) {
+                return false;
+            }
+
+            result.emplace_back(item.first, std::move(values));
+        }
+
+        rows->swap(result);
+        return true;
+    } catch (const std::exception& exception) {
+        SetError(error, exception.what());
+        return false;
+    }
+}
+
 }  // namespace ocera

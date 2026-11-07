@@ -14,30 +14,29 @@
 
 namespace ocera {
 
-// Executes the initial SQL subset: CREATE TABLE and INSERT.
-// Catalog and table storage are owned by the caller/executor respectively;
-// neither catalog metadata nor this runtime registry is persisted.
+struct QueryResult {
+    std::vector<std::string> column_names;
+    std::vector<std::vector<sql::Value>> rows;
+};
+
 class SqlExecutor {
 public:
     SqlExecutor(Catalog& catalog, BufferPoolManager& bpm);
 
-    // Parse and execute one SQL statement.
-    // Returns false for parse, semantic, storage, or unsupported-statement errors.
     bool Execute(
         const std::string& sql_text,
         RID* inserted_rid = nullptr,
-        std::string* error = nullptr
+        std::string* error = nullptr,
+        QueryResult* query_result = nullptr
     );
 
-    // Execute an already-parsed AST statement.
     bool Execute(
         const sql::Statement& statement,
         RID* inserted_rid = nullptr,
-        std::string* error = nullptr
+        std::string* error = nullptr,
+        QueryResult* query_result = nullptr
     );
 
-    // Read a row by its RID. This is a storage-level inspection/access helper,
-    // not implementation of the SQL SELECT statement.
     bool GetRowByRID(
         const std::string& table_name,
         const RID& rid,
@@ -47,7 +46,6 @@ public:
 
 private:
     struct TableRuntime {
-        // Declaration order matters: record_table is destroyed before heap.
         std::unique_ptr<TableHeap> heap;
         std::unique_ptr<RecordTable> record_table;
     };
@@ -60,6 +58,22 @@ private:
     bool ExecuteInsert(
         const sql::InsertStatement& statement,
         RID* inserted_rid,
+        std::string* error
+    );
+
+    bool ExecuteSelect(
+        const sql::SelectStatement& statement,
+        QueryResult* query_result,
+        std::string* error
+    );
+
+    bool ExecuteUpdate(
+        const sql::UpdateStatement& statement,
+        std::string* error
+    );
+
+    bool ExecuteDelete(
+        const sql::DeleteStatement& statement,
         std::string* error
     );
 

@@ -284,4 +284,64 @@ bool TableHeap::Delete(const RID& rid) {
     return success && unpinned;
 }
 
+bool TableHeap::Scan(
+    std::vector<std::pair<RID, std::vector<std::uint8_t>>>* records
+) {
+    if (records == nullptr || first_page_id_ < 2) {
+        return false;
+    }
+
+    try {
+        std::unordered_set<page_id_t> visited;
+        std::vector<std::pair<RID, std::vector<std::uint8_t>>> result;
+
+        page_id_t current_id = first_page_id_;
+
+        while (current_id != INVALID_PAGE_ID) {
+            if (!visited.insert(current_id).second) {
+                return false;
+            }
+
+            Page* page = bpm_.FetchPage(current_id);
+            if (page == nullptr) {
+                return false;
+            }
+
+            if (!RecordPage::IsValid(page)) {
+                bpm_.UnpinPage(current_id, false);
+                return false;
+            }
+
+            std::vector<std::pair<RID, std::vector<std::uint8_t>>>
+                page_records;
+
+            const bool scanned =
+                RecordPage::Scan(page, current_id, &page_records);
+
+            const page_id_t next_id =
+                RecordPage::GetNextPageId(page);
+
+            const bool unpinned =
+                bpm_.UnpinPage(current_id, false);
+
+            if (!scanned || !unpinned) {
+                return false;
+            }
+
+            result.insert(
+                result.end(),
+                std::make_move_iterator(page_records.begin()),
+                std::make_move_iterator(page_records.end())
+            );
+
+            current_id = next_id;
+        }
+
+        records->swap(result);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 }  // namespace ocera

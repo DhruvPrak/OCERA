@@ -21,7 +21,11 @@ target_include_directories(ocera_storage PUBLIC src)
 target_link_libraries(ocera_storage PUBLIC Threads::Threads)
 
 add_executable(ocera src/main.cpp)
-target_link_libraries(ocera PRIVATE Threads::Threads ocera_storage)
+
+target_link_libraries(ocera
+    PRIVATE
+        ocera_sql_executor
+)
 
 add_executable(test_storage tests/test_storage.cpp)
 target_link_libraries(test_storage PRIVATE ocera_storage)
