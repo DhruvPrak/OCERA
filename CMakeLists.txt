@@ -156,3 +156,19 @@ add_executable(test_record_table
     tests/test_record_table.cpp
 )
 target_link_libraries(test_record_table PRIVATE ocera_record_table)
+
+# Initial SQL execution layer: CREATE TABLE and INSERT.
+add_library(ocera_sql_executor
+    src/sql/executor.cpp
+)
+target_include_directories(ocera_sql_executor PUBLIC src)
+target_link_libraries(ocera_sql_executor
+    PUBLIC
+        ocera_catalog
+        ocera_record_table
+)
+
+add_executable(test_sql_executor
+    tests/test_sql_executor.cpp
+)
+target_link_libraries(test_sql_executor PRIVATE ocera_sql_executor)

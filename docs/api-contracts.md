@@ -551,6 +551,44 @@ must supply the same compatible schema when reopening stored records.
 
 CMake targets: `ocera_record_table`, `test_record_table`.
 
+## 14. SQL Executor — initial CREATE TABLE / INSERT support
+
+**Status:** Initial implementation scope; verify with the local build and integration test before marking tested.
+
+Files:
+- `src/sql/executor.h`
+- `src/sql/executor.cpp`
+- `tests/test_sql_executor.cpp`
+
+`SqlExecutor` receives references to an existing in-memory `Catalog` and
+`BufferPoolManager`. It parses SQL text or accepts an existing AST statement.
+The initial supported statements are `CREATE TABLE` and `INSERT`.
+
+- `CREATE TABLE` validates the statement, creates and initializes a first
+  `TableHeap` page, creates a `RecordTable` using the statement schema, and
+  registers the schema with the Catalog.
+- If Catalog registration fails after page allocation, the executor removes
+  its runtime registration and attempts to deallocate the new first page.
+- `INSERT` validates table existence, value count, and value types, then
+  delegates typed insertion to `RecordTable`.
+- The optional inserted `RID` identifies the stored row.
+- `GetRowByRID()` is a storage-level row lookup helper for integration and
+  internal use; it is not SQL `SELECT`.
+
+The executor owns runtime `TableHeap` and `RecordTable` objects. The caller
+must keep the referenced Catalog and BufferPoolManager alive longer than the
+executor. The executor is not thread-safe and does not acquire transaction
+locks.
+
+The Catalog and executor's table-to-heap registry are in-memory only. Table
+pages may be flushed, but this implementation does not persist Catalog
+metadata or reopen tables automatically after process restart. WAL,
+rollback, transaction integration, `SELECT`, `UPDATE`, and `DELETE` are not
+implemented by this milestone.
+
+CMake targets: `ocera_sql_executor`, `test_sql_executor`.
+
+
 ## Change log
 
 | Date | Change |
