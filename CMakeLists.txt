@@ -172,3 +172,10 @@ add_executable(test_sql_executor
     tests/test_sql_executor.cpp
 )
 target_link_libraries(test_sql_executor PRIVATE ocera_sql_executor)
+
+# Multiline SQL statement reader tests.
+add_executable(test_statement_reader
+    tests/test_statement_reader.cpp
+)
+
+target_include_directories(test_statement_reader PRIVATE src)
