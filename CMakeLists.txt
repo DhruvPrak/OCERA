@@ -139,3 +139,20 @@ target_link_libraries(test_table_heap
     PRIVATE
         ocera_table_heap
 )
+
+# Typed row adapter over RecordSerializer + TableHeap.
+# Place this after the existing ocera_table_heap target.
+add_library(ocera_record_table
+    src/record/record_table.cpp
+)
+target_include_directories(ocera_record_table PUBLIC src)
+target_link_libraries(ocera_record_table
+    PUBLIC
+        ocera_record_serializer
+        ocera_table_heap
+)
+
+add_executable(test_record_table
+    tests/test_record_table.cpp
+)
+target_link_libraries(test_record_table PRIVATE ocera_record_table)

@@ -529,6 +529,28 @@ For a public API or persisted-format change:
 5. Build and run the relevant tests; record the exact results.
 6. Distinguish implementation status from team approval and from durability guarantees.
 
+## 13. RecordTable — typed row adapter
+
+**Status:** Implemented as a thin adapter over `RecordSerializer` and `TableHeap`.
+
+`RecordTable` owns a copy of a `TableSchema` and holds a reference to an existing
+`TableHeap`. It exposes typed `Insert`, `Get`, `Update`, and `Delete` operations
+using schema-ordered `std::vector<sql::Value>` values and generation-aware `RID`s.
+
+- `Insert` encodes values with `RecordSerializer::Encode`, then calls
+  `TableHeap::Insert`.
+- `Get` retrieves opaque bytes with `TableHeap::Get`, then decodes them using
+  `RecordSerializer::Decode`.
+- `Update` encodes the replacement values before calling `TableHeap::Update`.
+- `Delete` delegates to `TableHeap::Delete`.
+
+The adapter does not own the heap, allocate pages, persist catalog metadata,
+execute SQL statements, or add transaction/WAL behavior. The caller must keep
+the referenced `TableHeap` alive for the lifetime of the `RecordTable`, and
+must supply the same compatible schema when reopening stored records.
+
+CMake targets: `ocera_record_table`, `test_record_table`.
+
 ## Change log
 
 | Date | Change |
