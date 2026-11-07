@@ -84,6 +84,27 @@ target_link_libraries(ocera_catalog PUBLIC ocera_sql)
 add_executable(test_catalog tests/test_catalog.cpp)
 target_link_libraries(test_catalog PRIVATE ocera_catalog)
 
+# Schema-aware record serialization (INT / TEXT).
+add_library(ocera_record_serializer
+    src/record/record_serializer.cpp
+)
+
+target_include_directories(ocera_record_serializer PUBLIC src)
+
+target_link_libraries(ocera_record_serializer
+    PUBLIC
+        ocera_catalog
+)
+
+add_executable(test_record_serializer
+    tests/test_record_serializer.cpp
+)
+
+target_link_libraries(test_record_serializer
+    PRIVATE
+        ocera_record_serializer
+)
+
 # Record Page
 add_library(ocera_record
     src/record/record_page.cpp
