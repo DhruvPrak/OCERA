@@ -1,4 +1,5 @@
-﻿#include <algorithm>
+﻿
+#include <algorithm>
 #include <cctype>
 #include <exception>
 #include <iostream>
@@ -43,29 +44,93 @@ std::string ToLower(std::string value) {
     return value;
 }
 
-void PrintQueryResult(const ocera::QueryResult& result) {
-    for (std::size_t i = 0; i < result.column_names.size(); ++i) {
-        if (i != 0) {
-            std::cout << '\t';
-        }
-        std::cout << result.column_names[i];
+// Convert an SQL value into printable text.
+std::string ValueToString(const ocera::sql::Value& value) {
+    if (value.type == ocera::sql::Value::Type::INTEGER) {
+        return std::to_string(value.int_value);
     }
+
+    return value.string_value;
+}
+
+// Print a horizontal table boundary.
+void PrintTableBorder(const std::vector<std::size_t>& widths) {
+    std::cout << '+';
+
+    for (const std::size_t width : widths) {
+        std::cout << std::string(width + 2, '-') << '+';
+    }
+
     std::cout << '\n';
+}
+
+// Print one table row with properly aligned columns.
+void PrintTableRow(
+    const std::vector<std::string>& cells,
+    const std::vector<std::size_t>& widths
+) {
+    std::cout << '|';
+
+    for (std::size_t i = 0; i < widths.size(); ++i) {
+        const std::string cell =
+            (i < cells.size()) ? cells[i] : "";
+
+        std::cout << ' ' << cell;
+
+        if (cell.size() < widths[i]) {
+            std::cout << std::string(widths[i] - cell.size(), ' ');
+        }
+
+        std::cout << " |";
+    }
+
+    std::cout << '\n';
+}
+
+void PrintQueryResult(const ocera::QueryResult& result) {
+    const std::size_t column_count = result.column_names.size();
+
+    // Preserve the empty-result behavior.
+    if (column_count == 0) {
+        std::cout << "(0 rows)\n";
+        return;
+    }
+
+    std::vector<std::vector<std::string>> rows;
+    rows.reserve(result.rows.size());
+
+    // Calculate the maximum required width of each column.
+    std::vector<std::size_t> widths(column_count, 0);
+
+    for (std::size_t i = 0; i < column_count; ++i) {
+        widths[i] = result.column_names[i].size();
+    }
 
     for (const auto& row : result.rows) {
-        for (std::size_t i = 0; i < row.size(); ++i) {
-            if (i != 0) {
-                std::cout << '\t';
-            }
+        std::vector<std::string> printable_row;
+        printable_row.reserve(column_count);
 
-            if (row[i].type == ocera::sql::Value::Type::INTEGER) {
-                std::cout << row[i].int_value;
-            } else {
-                std::cout << row[i].string_value;
-            }
+        for (std::size_t i = 0; i < column_count; ++i) {
+            const std::string value =
+                (i < row.size()) ? ValueToString(row[i]) : "";
+
+            printable_row.push_back(value);
+            widths[i] = std::max(widths[i], value.size());
         }
-        std::cout << '\n';
+
+        rows.push_back(std::move(printable_row));
     }
+
+    // Draw the complete table.
+    PrintTableBorder(widths);
+    PrintTableRow(result.column_names, widths);
+    PrintTableBorder(widths);
+
+    for (const auto& row : rows) {
+        PrintTableRow(row, widths);
+    }
+
+    PrintTableBorder(widths);
 
     std::cout << '(' << result.rows.size() << " rows)\n";
 }
