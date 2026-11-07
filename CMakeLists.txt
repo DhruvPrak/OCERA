@@ -83,3 +83,16 @@ target_link_libraries(ocera_catalog PUBLIC ocera_sql)
 
 add_executable(test_catalog tests/test_catalog.cpp)
 target_link_libraries(test_catalog PRIVATE ocera_catalog)
+
+# Record Page
+add_library(ocera_record
+    src/record/record_page.cpp
+)
+
+target_include_directories(ocera_record PUBLIC src)
+
+add_executable(test_record_page
+    tests/test_record_page.cpp
+)
+
+target_link_libraries(test_record_page PRIVATE ocera_record)
