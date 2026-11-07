@@ -15,6 +15,7 @@ add_library(ocera_storage
     src/storage/disk_manager.cpp
     src/storage/free_space_manager.cpp
     src/storage/database_header.cpp
+    src/storage/buffer_pool_manager.cpp
 )
 target_include_directories(ocera_storage PUBLIC src)
 target_link_libraries(ocera_storage PUBLIC Threads::Threads)
@@ -39,6 +40,9 @@ target_link_libraries(test_tokenizer PRIVATE ocera_sql)
 
 add_executable(test_parser tests/test_parser.cpp)
 target_link_libraries(test_parser PRIVATE ocera_sql)
+
+add_executable(test_buffer_pool tests/test_buffer_pool.cpp)
+target_link_libraries(test_buffer_pool PRIVATE ocera_storage)
 
 # Transaction / concurrency module (Bhavya). Independent of storage code.
 add_library(ocera_txn

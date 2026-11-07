@@ -269,11 +269,13 @@ page_id_t GetCatalogRootPageId() const;
 - The free-space manager must reserve the header page before it could be allocated to another caller.
 - Catalog root page ID is metadata; the Catalog implementation itself is not yet present.
 
-## 3. Buffer Pool — proposed API; Dhruv owns it
+## 3. Buffer Pool Manager — implemented API
 
-**Purpose:** cache pages in memory and keep buffer metadata separate from the on-disk page bytes.
+**Owner:** Dhruv Prakash
 
-Proposed minimal interface (names/signatures need team approval before implementation):
+**Purpose:** Cache database pages in memory, manage pin counts and dirty state, and use LRU replacement while keeping runtime metadata separate from persisted page bytes.
+
+### API
 
 ```cpp
 class BufferPoolManager {
@@ -281,6 +283,7 @@ public:
     BufferPoolManager(std::size_t pool_size,
                       DiskManager& disk_manager,
                       FreeSpaceManager& free_space_manager);
+
     Page* FetchPage(page_id_t page_id);
     bool UnpinPage(page_id_t page_id, bool is_dirty);
     bool FlushPage(page_id_t page_id);
@@ -290,13 +293,57 @@ public:
 };
 ```
 
-Contract proposal:
-- A successful `FetchPage` returns a pinned page; the caller must call `UnpinPage` once when finished.
-- `UnpinPage(id, true)` marks the frame dirty; dirty pages are written by flush/eviction.
-- `FetchPage` returns `nullptr` if it cannot obtain a frame or load the page. `NewPage` returns `nullptr` if no frame is available and communicates the allocated ID through the output pointer on success.
-- A pinned frame cannot be evicted.
-- LRU replacement is planned, but record the algorithm as confirmed only after the team approves it.
-- Thread safety, behavior on duplicate pin/unpin, and page deletion with active pins must be tested and agreed.
+### Object lifetime
+
+- `DiskManager` and `FreeSpaceManager` must outlive the `BufferPoolManager`.
+- The Buffer Pool stores references to both dependencies.
+- The Buffer Pool does not automatically flush pages during destruction. Explicit flushing is required when desired.
+
+### Pin/unpin lifecycle
+
+- Every successful `FetchPage()` and `NewPage()` returns a pinned page.
+- The caller must call `UnpinPage()` exactly once for each successful fetch or allocation.
+- A returned `Page*` must only be accessed while its page remains pinned. After unpinning, the caller must not access the pointer.
+- `UnpinPage(id, true)` marks the page dirty.
+- A subsequent `UnpinPage(id, false)` does not clear an existing dirty flag.
+- Unpinning an unknown page or a page with a zero pin count returns `false`.
+
+### Replacement and deletion
+
+- Pinned pages cannot be evicted.
+- Pinned pages cannot be deleted.
+- Unpinned pages are eligible for LRU replacement.
+- `DeletePage()` rejects reserved, invalid, unallocated, and pinned page IDs.
+
+### Failure behavior
+
+- `FetchPage()` returns `nullptr` for invalid or unallocated page IDs, or when no frame can be obtained.
+- `NewPage()` returns `nullptr` when no frame is available. Its output page ID remains `INVALID_PAGE_ID` on failure.
+- Disk I/O errors propagate as exceptions.
+
+### Flushing and dirty pages
+
+- Dirty pages are written during eviction, `FlushPage()`, or `FlushAllPages()`.
+- A dirty flag is cleared only after its corresponding write succeeds.
+- Flush operations may write pinned pages.
+- Callers must prevent concurrent page-byte modifications while a page is being flushed.
+- WAL ordering and durability requirements must be established before crash recovery is implemented.
+
+### Thread safety and page access
+
+- The Buffer Pool mutex protects internal metadata, including the page table, pin counts, dirty flags, free-frame list, and LRU structures.
+- It does not synchronize direct modifications to `Page::data` made by callers.
+- Concurrent page-content access must be coordinated by the transaction or page-latching layer.
+- Callers must not access page bytes after unpinning.
+
+### Replacement policy
+
+- LRU replacement is implemented.
+- Only unpinned frames are eligible for replacement.
+
+### Integration contract
+
+B+Tree, Table, and other page-based modules must use Buffer Pool operations rather than bypassing the Buffer Pool for raw page I/O through `DiskManager`.
 
 ## 4. Record, table and Catalog layer — proposed; Ishika owns this foundation
 
@@ -416,7 +463,7 @@ Keep dependencies flowing toward lower-level services. DiskManager should not de
 ## 11. Team approval checklist
 
 Before parallel implementation, agree and record:
-- [ ] Buffer Pool API and pin/unpin/eviction semantics
+- [x] Buffer Pool API and pin/unpin/eviction semantics
 - [ ] Record/table-page layout and Catalog schema representation
 - [ ] B+Tree key type and duplicate-key policy
 - [ ] Supported SQL grammar and result/error representation
