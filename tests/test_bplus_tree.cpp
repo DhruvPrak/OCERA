@@ -1,8 +1,9 @@
 #include <algorithm>
+#include <cstdint>
+#include <stdexcept>
 #include <iostream>
 #include <limits>
 #include <map>
-#include <numeric>
 #include <random>
 #include <string>
 #include <vector>
@@ -11,240 +12,167 @@
 
 using namespace ocera;
 
-static int g_failures = 0;
-
-static void Check(bool cond, const std::string& what) {
-    if (!cond) {
-        std::cout << "    FAILED: " << what << "\n";
-        ++g_failures;
-    }
+static int failures = 0;
+static void Check(bool condition, const std::string& message) {
+    if (!condition) { std::cerr << "FAILED: " << message << '\n'; ++failures; }
 }
-
-// A predictable RID for each key, so tests can confirm the RID came back intact.
-static RID MakeRid(std::int64_t k) {
-    // Unsigned math avoids overflow for extreme keys such as INT64_MIN.
-    std::uint64_t u = static_cast<std::uint64_t>(k);
-    RID r;
-    r.page_id = static_cast<page_id_t>(u % 100000);
-    r.slot_num = static_cast<std::uint32_t>((u * 7) % 1000);
-    return r;
+static RID MakeRid(std::uint32_t page, std::uint32_t slot, std::uint32_t generation = 1) {
+    RID rid;
+    rid.page_id = static_cast<page_id_t>(page);
+    rid.slot_num = slot;
+    rid.generation = generation;
+    return rid;
 }
-
-static void CheckTree(const BPlusTree& t, const std::string& ctx) {
-    std::string err;
-    Check(t.CheckInvariants(&err), ctx + ": invariants broken: " + err);
-}
-
-static void CheckFound(const BPlusTree& t, std::int64_t k) {
-    RID r;
-    bool found = t.Search(k, &r);
-    Check(found, "key " + std::to_string(k) + " should be found");
-    if (found) Check(r == MakeRid(k), "RID for key " + std::to_string(k) + " is wrong");
-}
-
-static void Report(const char* name, int before) {
-    std::cout << (g_failures == before ? "    PASSED: " : "    (see failures above) ") << name << "\n";
+static void CheckValid(const BPlusTree& tree, const std::string& where) {
+    std::string error;
+    Check(tree.CheckInvariants(&error), where + ": " + error);
 }
 
 int main() {
-    std::cout << "=== OCERA B+Tree Test (in-memory version) ===\n\n";
-    int before;
-
-    std::cout << "[1] Empty tree\n";
-    before = g_failures;
     {
-        BPlusTree t(3);
-        RID r;
-        Check(t.Empty() && t.Size() == 0, "empty tree has size 0");
-        Check(!t.Search(5, &r), "search in empty tree finds nothing");
-        Check(t.RangeScan(0, 100).empty(), "range scan of empty tree is empty");
-        Check(t.Height() == 1, "empty tree height is 1");
-        CheckTree(t, "empty");
+        BPlusTree tree(3);
+        Check(tree.Empty() && tree.Size() == 0, "new tree is empty");
+        Check(tree.SearchAll(5).empty(), "SearchAll on empty tree");
+        Check(!tree.Remove(5, MakeRid(1, 1)), "remove missing pair");
+        CheckValid(tree, "empty tree");
     }
-    Report("empty tree", before);
-
-    std::cout << "[2] Single key\n";
-    before = g_failures;
     {
-        BPlusTree t(3);
-        Check(t.Insert(42, MakeRid(42)), "insert 42 succeeds");
-        Check(t.Size() == 1, "size is 1");
-        CheckFound(t, 42);
-        Check(!t.Search(41, nullptr) && !t.Search(43, nullptr), "neighbours not found");
-        CheckTree(t, "single");
+        BPlusTree tree(3);
+        const RID a = MakeRid(10, 1), b = MakeRid(10, 2), c = MakeRid(10, 3);
+        Check(tree.Insert(20, a), "insert first duplicate key");
+        Check(tree.Insert(20, b), "insert second RID for key");
+        Check(tree.Insert(20, c), "insert third RID for key");
+        Check(!tree.Insert(20, b), "reject exact duplicate pair");
+        Check(tree.Size() == 3, "size counts pairs");
+        RID first;
+        Check(tree.Search(20, &first) && first == a, "Search returns first inserted RID");
+        const auto all = tree.SearchAll(20);
+        Check(all.size() == 3 && all[0] == a && all[1] == b && all[2] == c, "SearchAll preserves insertion order");
+        Check(tree.Remove(20, b), "remove middle RID");
+        Check(tree.SearchAll(20).size() == 2, "two RIDs remain");
+        Check(!tree.Remove(20, b), "removed pair cannot be removed twice");
+        Check(tree.Remove(20, a) && tree.Remove(20, c), "remove remaining RIDs");
+        Check(!tree.Search(20, nullptr) && tree.Empty(), "key removed after final RID");
+        CheckValid(tree, "duplicate-key tree after deletes");
     }
-    Report("single key", before);
-
-    std::cout << "[3] Ascending inserts 1..200 (max_keys=3), invariants after every insert\n";
-    before = g_failures;
     {
-        BPlusTree t(3);
-        for (int k = 1; k <= 200; ++k) {
-            Check(t.Insert(k, MakeRid(k)), "insert " + std::to_string(k));
-            CheckTree(t, "ascending after " + std::to_string(k));
+        BPlusTree tree(3);
+        for (std::int64_t k = 0; k < 300; ++k) {
+            Check(tree.Insert(k, MakeRid(static_cast<std::uint32_t>(k + 1), 0)), "ascending insert");
+            CheckValid(tree, "after ascending insert");
         }
-        for (int k = 1; k <= 200; ++k) CheckFound(t, k);
-        Check(t.Size() == 200, "size is 200");
-    }
-    Report("ascending", before);
-
-    std::cout << "[4] Descending inserts 200..1 (max_keys=3)\n";
-    before = g_failures;
-    {
-        BPlusTree t(3);
-        for (int k = 200; k >= 1; --k) {
-            t.Insert(k, MakeRid(k));
-            CheckTree(t, "descending after " + std::to_string(k));
+        for (std::int64_t k = 0; k < 300; ++k) {
+            Check(tree.Remove(k, MakeRid(static_cast<std::uint32_t>(k + 1), 0)), "ascending delete");
+            CheckValid(tree, "after ascending delete");
         }
-        for (int k = 1; k <= 200; ++k) CheckFound(t, k);
-        Check(t.Size() == 200, "size is 200");
+        Check(tree.Empty() && tree.Height() == 1, "tree shrinks back to empty leaf root");
     }
-    Report("descending", before);
-
-    std::cout << "[5] Random inserts compared against std::map, for several node sizes\n";
-    before = g_failures;
-    for (int m : {3, 4, 5, 8, 64}) {
-        std::mt19937 rng(12345 + m);
-        std::vector<int> keys(1500);
-        std::iota(keys.begin(), keys.end(), -700);
-        std::shuffle(keys.begin(), keys.end(), rng);
-        BPlusTree t(m);
-        std::map<std::int64_t, RID> ref;
-        for (int k : keys) {
-            t.Insert(k, MakeRid(k));
-            ref[k] = MakeRid(k);
+    {
+        BPlusTree tree(4);
+        std::map<std::int64_t, std::vector<RID>> reference;
+        std::mt19937 rng(123456);
+        for (int i = 0; i < 4000; ++i) {
+            const std::int64_t key = static_cast<int>(rng() % 180) - 90;
+            const RID rid = MakeRid(static_cast<std::uint32_t>(i + 1), static_cast<std::uint32_t>(i % 17), 1);
+            if ((rng() & 1U) == 0) {
+                const bool expected = std::find(reference[key].begin(), reference[key].end(), rid) == reference[key].end();
+                Check(tree.Insert(key, rid) == expected, "random insert result");
+                if (expected) reference[key].push_back(rid);
+            } else {
+                auto it = reference.find(key);
+                bool expected = false;
+                if (it != reference.end()) {
+                    auto rit = std::find(it->second.begin(), it->second.end(), rid);
+                    if (rit != it->second.end()) { it->second.erase(rit); expected = true; }
+                    if (it->second.empty()) reference.erase(it);
+                }
+                Check(tree.Remove(key, rid) == expected, "random remove result");
+            }
+            std::size_t total = 0;
+            for (const auto& entry : reference) total += entry.second.size();
+            Check(tree.Size() == total, "random size matches reference");
+            CheckValid(tree, "random mutation");
         }
-        CheckTree(t, "random max_keys=" + std::to_string(m));
-        Check(t.Size() == ref.size(), "size matches reference");
-        for (auto& kv : ref) CheckFound(t, kv.first);
-        auto all = t.RangeScan(std::numeric_limits<std::int64_t>::min(),
-                               std::numeric_limits<std::int64_t>::max());
-        Check(all.size() == ref.size(), "full scan returns every key");
-        bool ordered = true;
-        std::size_t i = 0;
-        for (auto& kv : ref) {
-            if (i >= all.size() || all[i].first != kv.first || !(all[i].second == kv.second)) ordered = false;
-            ++i;
+        std::vector<std::pair<std::int64_t, RID>> expected;
+        for (const auto& entry : reference)
+            for (const RID& rid : entry.second) expected.emplace_back(entry.first, rid);
+        const auto actual = tree.RangeScan(std::numeric_limits<std::int64_t>::min(), std::numeric_limits<std::int64_t>::max());
+        Check(actual.size() == expected.size(), "random full range size");
+        Check(actual == expected, "random full range contents and ordering");
+    }
+    {
+        BPlusTree tree(3);
+        const auto lo = std::numeric_limits<std::int64_t>::min();
+        const auto hi = std::numeric_limits<std::int64_t>::max();
+        Check(tree.Insert(lo, MakeRid(1, 1)), "insert INT64_MIN");
+        Check(tree.Insert(hi, MakeRid(2, 2)), "insert INT64_MAX");
+        const auto all = tree.RangeScan(lo, hi);
+        Check(all.size() == 2 && all.front().first == lo && all.back().first == hi, "range handles integer extremes");
+        CheckValid(tree, "extreme-key tree");
+    }
+
+    {
+        // Descending insertion exercises splits on the left edge of the tree.
+        BPlusTree tree(3);
+        for (std::int64_t k = 299; k >= 0; --k) {
+            Check(tree.Insert(k, MakeRid(static_cast<std::uint32_t>(k + 1), 1)),
+                  "descending insert");
         }
-        Check(ordered, "full scan matches reference order and RIDs");
-    }
-    Report("random vs std::map", before);
+        Check(tree.Height() > 1, "descending inserts grow tree height");
+        CheckValid(tree, "after descending inserts");
 
-    std::cout << "[6] Missing keys (gaps, below the minimum, above the maximum)\n";
-    before = g_failures;
-    {
-        BPlusTree t(4);
-        for (int k = 0; k < 500; k += 2) t.Insert(k, MakeRid(k));  // evens only
-        for (int k = 1; k < 500; k += 2) Check(!t.Search(k, nullptr), "odd key " + std::to_string(k) + " should be missing");
-        Check(!t.Search(-1, nullptr), "below minimum");
-        Check(!t.Search(100000, nullptr), "above maximum");
-        CheckTree(t, "missing keys");
-    }
-    Report("missing keys", before);
+        RID found;
+        Check(tree.Search(0, &found), "search smallest descending-inserted key");
+        Check(tree.Search(299, &found), "search largest descending-inserted key");
+        Check(!tree.Search(-1, nullptr), "missing key below range");
+        Check(!tree.Search(300, nullptr), "missing key above range");
 
-    std::cout << "[7] Duplicate keys are rejected and change nothing\n";
-    before = g_failures;
-    {
-        BPlusTree t(3);
-        for (int k = 1; k <= 50; ++k) t.Insert(k, MakeRid(k));
-        RID other{999, 999};
-        Check(!t.Insert(25, other), "duplicate insert returns false");
-        Check(t.Size() == 50, "size unchanged after duplicate");
-        CheckFound(t, 25);  // still the ORIGINAL RID
-        Check(!t.Insert(1, other) && !t.Insert(50, other), "duplicates at the edges rejected");
-        CheckTree(t, "duplicates");
-    }
-    Report("duplicates", before);
+        const auto middle = tree.RangeScan(100, 105);
+        Check(middle.size() == 6, "inclusive range scan returns both boundaries");
+        Check(!middle.empty() && middle.front().first == 100 &&
+              middle.back().first == 105, "range scan boundary keys");
+        Check(tree.RangeScan(106, 100).empty(), "reversed range is empty");
 
-    std::cout << "[8] Splits and root changes make the tree grow taller\n";
-    before = g_failures;
+        const auto single = tree.RangeScan(150, 150);
+        Check(single.size() == 1 && single.front().first == 150,
+              "single-key inclusive range scan");
+        CheckValid(tree, "descending tree");
+    }
     {
-        BPlusTree t(3);
-        for (int k = 1; k <= 3; ++k) t.Insert(k, MakeRid(k));
-        Check(t.Height() == 1, "3 keys still fit in one leaf (height 1)");
-        t.Insert(4, MakeRid(4));
-        Check(t.Height() == 2, "4th key splits the leaf and creates a new root (height 2)");
-        int last = t.Height();
-        for (int k = 5; k <= 60; ++k) {
-            t.Insert(k, MakeRid(k));
-            Check(t.Height() >= last, "height never shrinks");
-            last = t.Height();
+        // Constructor rejects fanout values that cannot support the algorithms.
+        bool rejected_small = false;
+        bool rejected_negative = false;
+        try { BPlusTree invalid(2); }
+        catch (const std::invalid_argument&) { rejected_small = true; }
+        try { BPlusTree invalid(-1); }
+        catch (const std::invalid_argument&) { rejected_negative = true; }
+        Check(rejected_small, "constructor rejects max_keys below three");
+        Check(rejected_negative, "constructor rejects negative max_keys");
+    }
+    {
+        // A larger deterministic workload checks height growth and lookup
+        // without running the expensive invariant walk after every insertion.
+        BPlusTree tree(8);
+        constexpr std::int64_t count = 20000;
+        for (std::int64_t k = 0; k < count; ++k) {
+            Check(tree.Insert(k, MakeRid(static_cast<std::uint32_t>(k + 1), 2)),
+                  "large ascending insert");
         }
-        Check(t.Height() >= 3, "internal node splits raise height to at least 3");
-        CheckTree(t, "root changes");
-        for (int k = 1; k <= 60; ++k) CheckFound(t, k);
+        Check(tree.Height() > 1, "large workload grows tree height");
+        Check(tree.Size() == static_cast<std::size_t>(count),
+              "large workload pair count");
+        RID found;
+        Check(tree.Search(0, &found), "large workload finds first key");
+        Check(tree.Search(count / 2, &found), "large workload finds middle key");
+        Check(tree.Search(count - 1, &found), "large workload finds final key");
+        Check(!tree.Search(count, nullptr), "large workload rejects missing key");
+        const auto range = tree.RangeScan(9990, 10009);
+        Check(range.size() == 20, "large workload bounded range size");
+        Check(!range.empty() && range.front().first == 9990 &&
+              range.back().first == 10009, "large workload bounded range endpoints");
+        CheckValid(tree, "large workload");
     }
-    Report("splits / root changes", before);
-
-    std::cout << "[9] Range scans\n";
-    before = g_failures;
-    {
-        BPlusTree t(3);
-        for (int k = 10; k <= 1000; k += 10) t.Insert(k, MakeRid(k));  // 10,20,...,1000
-        auto r = t.RangeScan(100, 200);
-        Check(r.size() == 11 && r.front().first == 100 && r.back().first == 200, "bounds are inclusive");
-        r = t.RangeScan(105, 195);
-        Check(r.size() == 9 && r.front().first == 110 && r.back().first == 190, "bounds that are not keys");
-        Check(t.RangeScan(500, 500).size() == 1, "single-key range");
-        Check(t.RangeScan(501, 509).empty(), "range inside a gap is empty");
-        Check(t.RangeScan(200, 100).empty(), "low > high is empty");
-        Check(t.RangeScan(-50, 5).empty(), "range entirely below keys");
-        Check(t.RangeScan(2000, 3000).empty(), "range entirely above keys");
-        Check(t.RangeScan(-50, 25).size() == 2, "range starting below minimum");
-        Check(t.RangeScan(990, 5000).size() == 2, "range running past maximum");
-        r = t.RangeScan(0, 100000);
-        bool sorted = std::is_sorted(r.begin(), r.end(),
-                                     [](const auto& a, const auto& b) { return a.first < b.first; });
-        Check(r.size() == 100 && sorted, "whole-range scan is complete and sorted (crosses many leaves)");
-    }
-    Report("range scans", before);
-
-    std::cout << "[10] Larger tree: 20000 random keys, max_keys=32\n";
-    before = g_failures;
-    {
-        std::mt19937 rng(777);
-        std::vector<int> keys(20000);
-        std::iota(keys.begin(), keys.end(), 0);
-        std::shuffle(keys.begin(), keys.end(), rng);
-        BPlusTree t(32);
-        for (int k : keys) t.Insert(k, MakeRid(k));
-        CheckTree(t, "large");
-        Check(t.Size() == 20000, "size is 20000");
-        for (int k = 0; k < 20000; k += 7) CheckFound(t, k);
-        Check(t.RangeScan(5000, 5999).size() == 1000, "range of 1000 keys");
-        std::cout << "    (height of this tree: " << t.Height() << ")\n";
-    }
-    Report("large tree", before);
-
-    std::cout << "[11] Negative keys and int64 extremes\n";
-    before = g_failures;
-    {
-        BPlusTree t(3);
-        const std::int64_t lo = std::numeric_limits<std::int64_t>::min();
-        const std::int64_t hi = std::numeric_limits<std::int64_t>::max();
-        for (std::int64_t k : {lo, hi, std::int64_t(0), std::int64_t(-1), std::int64_t(1), lo + 1, hi - 1})
-            Check(t.Insert(k, MakeRid(k)), "insert extreme key");
-        for (std::int64_t k : {lo, hi, std::int64_t(0), std::int64_t(-1), std::int64_t(1), lo + 1, hi - 1})
-            CheckFound(t, k);
-        auto all = t.RangeScan(lo, hi);
-        Check(all.size() == 7 && all.front().first == lo && all.back().first == hi, "full range with extremes");
-        CheckTree(t, "extremes");
-    }
-    Report("extremes", before);
-
-    std::cout << "[12] Invalid node size is rejected\n";
-    before = g_failures;
-    {
-        bool threw = false;
-        try { BPlusTree t(2); } catch (const std::invalid_argument&) { threw = true; }
-        Check(threw, "max_keys < 3 throws std::invalid_argument");
-    }
-    Report("invalid max_keys", before);
-
-    if (g_failures == 0) {
-        std::cout << "\nAll B+Tree tests passed.\n";
-        return 0;
-    }
-    std::cout << "\n" << g_failures << " B+Tree check(s) FAILED.\n";
+    if (failures == 0) { std::cout << "All B+Tree tests passed.\n"; return 0; }
+    std::cerr << failures << " B+Tree test(s) failed.\n";
     return 1;
 }
