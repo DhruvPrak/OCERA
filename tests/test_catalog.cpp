@@ -35,6 +35,27 @@ static CreateTableStatement MakeCreate(const std::string& name,
     for (auto& c : cols) { ColumnDefinition d; d.name = c.first; d.type = c.second; s.columns.push_back(d); }
     return s;
 }
+
+static CreateIndexStatement MakeIndex(const std::string& name,
+                                      const std::string& table,
+                                      const std::string& column) {
+    CreateIndexStatement s;
+    s.index_name = name;
+    s.table = table;
+    s.column = column;
+    return s;
+}
+
+static bool ThrowsIndex(Catalog& c, const CreateIndexStatement& s) {
+    try { c.CreateIndex(s); return false; } catch (const CatalogError&) { return true; }
+}
+
+static Statement CreateIndexStmt(const std::string& name,
+                                 const std::string& table,
+                                 const std::string& column) {
+    return MakeIndex(name, table, column);
+}
+
 static Statement Insert(const std::string& t, std::vector<Value> vals) {
     InsertStatement s; s.table = t; s.values = std::move(vals); return s;
 }
@@ -207,6 +228,119 @@ int main() {
         }
     }
     Report("messages", before);
+
+
+    std::cout << "[10] CREATE INDEX validation\n";
+    before = g_failures;
+    {
+        Catalog c = MakeStudents();
+        Check(Valid(CreateIndexStmt("idx_students_id", "students", "id"), c),
+              "valid INT index");
+        Check(Valid(CreateIndexStmt("IDX_STUDENTS_ID", "STUDENTS", "ID"), c),
+              "validation is case-insensitive before registration");
+        Check(!Valid(CreateIndexStmt("", "students", "id"), c), "empty index name");
+        Check(!Valid(CreateIndexStmt("idx_missing", "missing", "id"), c),
+              "missing table");
+        Check(!Valid(CreateIndexStmt("idx_age", "students", "age"), c),
+              "missing column");
+        Check(!Valid(CreateIndexStmt("idx_name", "students", "name"), c),
+              "TEXT column rejected");
+        c.CreateIndex(MakeIndex("idx_id", "students", "id"));
+        Check(!Valid(CreateIndexStmt("idx_id", "students", "id"), c),
+              "duplicate index name");
+        Check(!Valid(CreateIndexStmt("idx_id_again", "STUDENTS", "ID"), c),
+              "second index on same table column");
+        Check(c.NumIndexes() == 1, "validation does not register indexes");
+    }
+    Report("CREATE INDEX validation", before);
+
+    std::cout << "[11] CREATE INDEX catalog registration and lookups\n";
+    before = g_failures;
+    {
+        Catalog c = MakeStudents();
+        Check(c.NumIndexes() == 0 && !c.HasIndex("idx_students_id"),
+              "starts without indexes");
+        c.CreateIndex(MakeIndex("Idx_Students_Id", "STUDENTS", "ID"));
+        Check(c.NumIndexes() == 1, "one index registered");
+        Check(c.HasIndex("idx_students_id"), "index name lookup is case-insensitive");
+        const IndexSchema* by_name = c.GetIndex("IDX_STUDENTS_ID");
+        Check(by_name != nullptr, "GetIndex finds index case-insensitively");
+        if (by_name) {
+            Check(by_name->name == "Idx_Students_Id", "original index spelling kept");
+            Check(by_name->table_name == "students", "canonical table spelling stored");
+            Check(by_name->column_name == "id", "canonical column spelling stored");
+        }
+        const IndexSchema* by_column = c.GetIndexForColumn("Students", "ID");
+        Check(by_column != nullptr, "lookup by table and column is case-insensitive");
+        Check(by_column && by_column->name == "Idx_Students_Id",
+              "column lookup returns registered index");
+        Check(c.GetIndex("missing") == nullptr, "missing index returns nullptr");
+        Check(c.GetIndexForColumn("students", "name") == nullptr,
+              "unindexed column returns nullptr");
+    }
+    Report("CREATE INDEX registration", before);
+
+    std::cout << "[12] Rejected CREATE INDEX operations leave Catalog unchanged\n";
+    before = g_failures;
+    {
+        Catalog c = MakeStudents();
+        Check(ThrowsIndex(c, MakeIndex("", "students", "id")), "empty index name");
+        Check(ThrowsIndex(c, MakeIndex("idx_missing", "missing", "id")),
+              "missing table");
+        Check(ThrowsIndex(c, MakeIndex("idx_age", "students", "age")),
+              "missing column");
+        Check(ThrowsIndex(c, MakeIndex("idx_name", "students", "name")),
+              "TEXT column");
+        Check(!c.HasIndex("idx_missing") && !c.HasIndex("idx_age") &&
+              !c.HasIndex("idx_name"), "failed registrations leave no metadata");
+        Check(c.NumIndexes() == 0, "failed registrations preserve index count");
+
+        c.CreateIndex(MakeIndex("idx_id", "students", "id"));
+        Check(ThrowsIndex(c, MakeIndex("IDX_ID", "students", "id")),
+              "duplicate index name, case-insensitive");
+        Check(ThrowsIndex(c, MakeIndex("idx_id_second", "STUDENTS", "ID")),
+              "duplicate index for table/column, case-insensitive");
+        Check(c.NumIndexes() == 1 && c.HasIndex("idx_id") &&
+              !c.HasIndex("idx_id_second"), "duplicate failures leave existing index intact");
+    }
+    Report("CREATE INDEX rejection / atomicity", before);
+
+    std::cout << "[13] PRIMARY KEY / UNIQUE metadata validation" << std::endl;
+    before = g_failures;
+    {
+        Catalog c;
+        CreateTableStatement keyed = MakeCreate("enrollments",
+            {{"student_id", ColumnType::INT}, {"course_id", ColumnType::INT},
+             {"email", ColumnType::TEXT}});
+        keyed.key_constraints.push_back(
+            {KeyConstraintType::PRIMARY_KEY, {"student_id", "course_id"}, 0});
+        keyed.key_constraints.push_back(
+            {KeyConstraintType::UNIQUE, {"email"}, 0});
+        c.CreateTable(keyed);
+        const TableSchema* schema = c.GetTable("enrollments");
+        Check(schema && schema->key_constraints.size() == 2,
+              "catalog retains primary and unique key metadata");
+        Check(schema && schema->key_constraints[0].columns.size() == 2,
+              "composite primary key metadata retained");
+
+        CreateTableStatement unknown = MakeCreate("bad_key", {{"id", ColumnType::INT}});
+        unknown.key_constraints.push_back(
+            {KeyConstraintType::PRIMARY_KEY, {"missing"}, 0});
+        Check(ThrowsCatalog(c, unknown), "unknown key column rejected");
+
+        CreateTableStatement two_pk = MakeCreate("bad_pk",
+            {{"a", ColumnType::INT}, {"b", ColumnType::INT}});
+        two_pk.key_constraints.push_back({KeyConstraintType::PRIMARY_KEY, {"a"}, 0});
+        two_pk.key_constraints.push_back({KeyConstraintType::PRIMARY_KEY, {"b"}, 0});
+        Check(ThrowsCatalog(c, two_pk), "multiple primary keys rejected");
+
+        CreateTableStatement duplicate_col = MakeCreate("bad_duplicate_key",
+            {{"a", ColumnType::INT}, {"b", ColumnType::INT}});
+        duplicate_col.key_constraints.push_back(
+            {KeyConstraintType::UNIQUE, {"a", "A"}, 0});
+        Check(ThrowsCatalog(c, duplicate_col), "duplicate key column rejected");
+    }
+    Report("key metadata / validation", before);
 
     if (g_failures == 0) {
         std::cout << "\nAll catalog tests passed.\n";

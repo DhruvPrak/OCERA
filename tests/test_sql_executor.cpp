@@ -356,6 +356,47 @@ int main() {
         ));
 
         assert(!error.empty());
+        std::cout << "[22] PRIMARY KEY and UNIQUE enforcement" << std::endl;
+        assert(executor.Execute(
+            "CREATE TABLE keyed (id INT PRIMARY KEY, email TEXT UNIQUE, label TEXT);",
+            nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO keyed VALUES (1, 'a@example.com', 'first');",
+            nullptr, &error));
+        assert(!executor.Execute(
+            "INSERT INTO keyed VALUES (1, 'b@example.com', 'duplicate id');",
+            nullptr, &error));
+        assert(!executor.Execute(
+            "INSERT INTO keyed VALUES (2, 'a@example.com', 'duplicate email');",
+            nullptr, &error));
+        QueryResult keyed_result;
+        assert(executor.Execute("SELECT * FROM keyed;", nullptr, &error, &keyed_result));
+        assert(keyed_result.rows.size() == 1);
+
+        std::cout << "[23] Composite PRIMARY KEY and UPDATE enforcement" << std::endl;
+        assert(executor.Execute(
+            "CREATE TABLE enrollments (student_id INT, course_id INT, "
+            "PRIMARY KEY (student_id, course_id));", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO enrollments VALUES (1, 10);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO enrollments VALUES (1, 11);", nullptr, &error));
+        assert(!executor.Execute(
+            "INSERT INTO enrollments VALUES (1, 10);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO enrollments VALUES (2, 10);", nullptr, &error));
+        assert(!executor.Execute(
+            "UPDATE enrollments SET student_id = 1 WHERE course_id = 10;",
+            nullptr, &error));
+        QueryResult enrollment_result;
+        assert(executor.Execute("SELECT * FROM enrollments;", nullptr, &error,
+                                &enrollment_result));
+        assert(enrollment_result.rows.size() == 3);
+        assert(enrollment_result.rows[0][0].int_value == 1 &&
+               enrollment_result.rows[0][1].int_value == 10);
+        assert(enrollment_result.rows[2][0].int_value == 2 &&
+               enrollment_result.rows[2][1].int_value == 10);
+
         bpm.FlushAllPages();
     }
 

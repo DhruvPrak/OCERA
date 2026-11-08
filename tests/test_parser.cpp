@@ -73,8 +73,28 @@ int main() {
         }
         auto one = ParseAs<CreateTableStatement>("CREATE TABLE t (a INT)");
         Check(one.columns.size() == 1, "single column, no semicolon");
+        auto keyed = ParseAs<CreateTableStatement>(
+            "CREATE TABLE enrollments (student_id INT, course_id INT, "
+            "PRIMARY KEY (student_id, course_id), email TEXT UNIQUE)");
+        Check(keyed.columns.size() == 3, "keyed table columns");
+        Check(keyed.key_constraints.size() == 2, "table and column constraints");
+        if (keyed.key_constraints.size() == 2) {
+            Check(keyed.key_constraints[0].type == KeyConstraintType::PRIMARY_KEY &&
+                  keyed.key_constraints[0].columns.size() == 2,
+                  "composite primary key parsed");
+            Check(keyed.key_constraints[1].type == KeyConstraintType::UNIQUE &&
+                  keyed.key_constraints[1].columns[0] == "email",
+                  "column UNIQUE parsed");
+        }
+        auto single = ParseAs<CreateTableStatement>(
+            "CREATE TABLE users (id INT PRIMARY KEY, email TEXT UNIQUE)");
+        Check(single.key_constraints.size() == 2, "column-level key constraints parsed");
+        Check(ParseFails("CREATE TABLE bad (a INT, PRIMARY KEY ())"),
+              "empty primary-key column list rejected");
+        Check(ParseFails("CREATE TABLE bad (a INT, UNIQUE (a,))"),
+              "trailing comma in unique key rejected");
     }
-    Report("CREATE TABLE", before);
+    Report("CREATE TABLE and key constraints", before);
 
     std::cout << "[2] INSERT with integers\n";
     before = g_failures;

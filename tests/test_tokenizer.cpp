@@ -82,7 +82,20 @@ int main() {
                 {{T::KEYWORD, "INSERT"}, {T::KEYWORD, "INTO"}, {T::IDENTIFIER, "t"},
                  {T::KEYWORD, "VALUES"}, {T::SYMBOL, "("}, {T::INTEGER, "1"}, {T::SYMBOL, ","},
                  {T::STRING, "Asha"}, {T::SYMBOL, ")"}, {T::SYMBOL, ";"}});
-    Report("CREATE / INSERT", before);
+    CheckTokens("CREATE INDEX idx_age ON students (age);",
+                {{T::KEYWORD, "CREATE"}, {T::KEYWORD, "INDEX"},
+                 {T::IDENTIFIER, "idx_age"}, {T::KEYWORD, "ON"},
+                 {T::IDENTIFIER, "students"}, {T::SYMBOL, "("},
+                 {T::IDENTIFIER, "age"}, {T::SYMBOL, ")"}, {T::SYMBOL, ";"}});
+    CheckTokens("create index IDX on T (A)",
+                {{T::KEYWORD, "CREATE"}, {T::KEYWORD, "INDEX"},
+                 {T::IDENTIFIER, "IDX"}, {T::KEYWORD, "ON"},
+                 {T::IDENTIFIER, "T"}, {T::SYMBOL, "("},
+                 {T::IDENTIFIER, "A"}, {T::SYMBOL, ")"}});
+    CheckTokens("PRIMARY KEY UNIQUE",
+                {{T::KEYWORD, "PRIMARY"}, {T::KEYWORD, "KEY"},
+                 {T::KEYWORD, "UNIQUE"}});
+    Report("CREATE / INSERT / INDEX / KEYWORDS", before);
 
     std::cout << "[4] UPDATE, DELETE, AND/OR, star\n";
     before = g_failures;

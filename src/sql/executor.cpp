@@ -63,6 +63,52 @@ bool CompareValues(
     return false;
 }
 
+
+bool ValuesEqual(const sql::Value& left, const sql::Value& right) {
+    if (left.type != right.type) return false;
+    return left.type == sql::Value::Type::INTEGER
+        ? left.int_value == right.int_value
+        : left.string_value == right.string_value;
+}
+
+bool RowsConflictOnKey(const KeySchema& key, const TableSchema& schema,
+                       const std::vector<sql::Value>& left,
+                       const std::vector<sql::Value>& right) {
+    for (const auto& name : key.columns) {
+        const int index = schema.ColumnIndex(name);
+        if (index < 0 || static_cast<std::size_t>(index) >= left.size() ||
+            static_cast<std::size_t>(index) >= right.size()) return false;
+        if (!ValuesEqual(left[static_cast<std::size_t>(index)],
+                         right[static_cast<std::size_t>(index)])) return false;
+    }
+    return true;
+}
+
+bool ValidateKeyConstraints(const TableSchema& schema,
+                            const std::vector<std::vector<sql::Value>>& rows,
+                            std::string* error) {
+    for (const auto& key : schema.key_constraints) {
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            for (std::size_t j = i + 1; j < rows.size(); ++j) {
+                if (RowsConflictOnKey(key, schema, rows[i], rows[j])) {
+                    std::string columns;
+                    for (const auto& name : key.columns) {
+                        if (!columns.empty()) columns += ", ";
+                        columns += name;
+                    }
+                    const std::string kind =
+                        key.type == sql::KeyConstraintType::PRIMARY_KEY
+                            ? "PRIMARY KEY" : "UNIQUE";
+                    SetError(error, kind + " constraint violation on (" +
+                                    columns + ") in table '" + schema.name + "'");
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 bool MatchesCondition(
     const sql::Condition& condition,
     const TableSchema& schema,
@@ -272,6 +318,19 @@ bool SqlExecutor::ExecuteInsert(
         return false;
     }
 
+    const TableSchema* schema = catalog_.GetTable(statement.table);
+    std::vector<std::pair<RID, std::vector<sql::Value>>> stored_rows;
+    if (schema == nullptr ||
+        !table_it->second.record_table->Scan(&stored_rows, error)) {
+        if (schema == nullptr) SetError(error, "table schema is unavailable");
+        return false;
+    }
+    std::vector<std::vector<sql::Value>> rows;
+    rows.reserve(stored_rows.size() + 1);
+    for (const auto& stored : stored_rows) rows.push_back(stored.second);
+    rows.push_back(statement.values);
+    if (!ValidateKeyConstraints(*schema, rows, error)) return false;
+
     RID new_rid;
 
     if (!table_it->second.record_table->Insert(
@@ -419,46 +478,47 @@ bool SqlExecutor::ExecuteUpdate(
     }
 
     try {
+        std::vector<std::vector<sql::Value>> resulting_rows;
+        resulting_rows.reserve(stored_rows.size());
+        std::vector<std::pair<RID, std::vector<sql::Value>>> updates;
+
         for (const auto& stored : stored_rows) {
             const RID& rid = stored.first;
             const auto& original_row = stored.second;
-
-            if (statement.where.has_value() &&
-                !MatchesCondition(*statement.where, *schema, original_row)) {
-                continue;
-            }
-
-            // Work on a copy so that assignments are applied together
-            // before the row is written back.
             std::vector<sql::Value> updated_row = original_row;
 
-            for (const auto& assignment : statement.assignments) {
-                const int column_index =
-                    schema->ColumnIndex(assignment.column);
-
-                if (column_index < 0 ||
-                    static_cast<std::size_t>(column_index) >=
-                        updated_row.size()) {
-                    SetError(
-                        error,
-                        "unknown UPDATE column '" + assignment.column + "'"
-                    );
-                    return false;
+            if (!statement.where.has_value() ||
+                MatchesCondition(*statement.where, *schema, original_row)) {
+                for (const auto& assignment : statement.assignments) {
+                    const int column_index = schema->ColumnIndex(assignment.column);
+                    if (column_index < 0 ||
+                        static_cast<std::size_t>(column_index) >= updated_row.size()) {
+                        SetError(error, "unknown UPDATE column '" + assignment.column + "'");
+                        return false;
+                    }
+                    updated_row[static_cast<std::size_t>(column_index)] = assignment.value;
                 }
-
-                updated_row[static_cast<std::size_t>(column_index)] =
-                    assignment.value;
+                bool changed = false;
+                for (std::size_t i = 0; i < updated_row.size(); ++i) {
+                    if (!ValuesEqual(updated_row[i], original_row[i])) {
+                        changed = true;
+                        break;
+                    }
+                }
+                if (changed) updates.emplace_back(rid, updated_row);
             }
+            resulting_rows.push_back(std::move(updated_row));
+        }
 
-            if (!table_it->second.record_table->Update(
-                    rid, updated_row, error)) {
-                if (error != nullptr && error->empty()) {
+        if (!ValidateKeyConstraints(*schema, resulting_rows, error)) return false;
+
+        for (const auto& update : updates) {
+            if (!table_it->second.record_table->Update(update.first, update.second, error)) {
+                if (error != nullptr && error->empty())
                     SetError(error, "failed to update a matching row");
-                }
                 return false;
             }
         }
-
         return true;
     } catch (const std::exception& exception) {
         SetError(error, exception.what());
