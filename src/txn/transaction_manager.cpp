@@ -9,16 +9,47 @@ txn_id_t TransactionManager::Begin() {
     return id;
 }
 
-bool TransactionManager::Finish(txn_id_t txn_id, TransactionState final_state) {
+bool TransactionManager::Finish(txn_id_t txn_id,
+                                TransactionState final_state) {
     {
         std::lock_guard<std::mutex> guard(mutex_);
+
         auto it = states_.find(txn_id);
-        if (it == states_.end() || it->second != TransactionState::Active)
+        if (it == states_.end() ||
+            it->second != TransactionState::Active ||
+            finishing_.count(txn_id)) {
             return false;
-        it->second = final_state;  // no new locks can be requested from now on
+        }
+
+        // Prevent any new Lock() calls from starting.
+        finishing_.insert(txn_id);
     }
-    // Release outside our mutex: it may wake other threads.
+
+    // Cancel pending lock requests and wake blocked Lock() calls.
+    lock_manager_.AbortTransaction(txn_id);
+
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+
+        // Wait until every Lock() call that started earlier has returned.
+        cv_.wait(lock, [&]() {
+            auto it = in_flight_locks_.find(txn_id);
+            return it == in_flight_locks_.end() || it->second == 0;
+        });
+    }
+
+    // All Lock() calls have finished. Release every held lock.
     lock_manager_.ReleaseAllLocks(txn_id);
+
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+
+        states_[txn_id] = final_state;
+        finishing_.erase(txn_id);
+        in_flight_locks_.erase(txn_id);
+    }
+
+    cv_.notify_all();
     return true;
 }
 
@@ -34,14 +65,48 @@ bool TransactionManager::Lock(txn_id_t txn_id, ResourceId resource,
                               LockMode mode) {
     {
         std::lock_guard<std::mutex> guard(mutex_);
+
         auto it = states_.find(txn_id);
-        if (it == states_.end() || it->second != TransactionState::Active)
+        if (it == states_.end() ||
+            it->second != TransactionState::Active ||
+            finishing_.count(txn_id)) {
             return false;
+        }
+
+        // Register this request before entering the Lock Manager.
+        ++in_flight_locks_[txn_id];
     }
-    // May block here, so the state mutex must not be held.
-    return mode == LockMode::Shared
-               ? lock_manager_.LockShared(txn_id, resource)
-               : lock_manager_.LockExclusive(txn_id, resource);
+
+    bool acquired = false;
+
+    try {
+        // Do not hold the Transaction Manager mutex while this may block.
+        acquired = mode == LockMode::Shared
+                       ? lock_manager_.LockShared(txn_id, resource)
+                       : lock_manager_.LockExclusive(txn_id, resource);
+    } catch (...) {
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            auto it = in_flight_locks_.find(txn_id);
+            if (it != in_flight_locks_.end() && --it->second == 0) {
+                in_flight_locks_.erase(it);
+            }
+        }
+        cv_.notify_all();
+        throw;
+    }
+
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+
+        auto it = in_flight_locks_.find(txn_id);
+        if (it != in_flight_locks_.end() && --it->second == 0) {
+            in_flight_locks_.erase(it);
+        }
+    }
+
+    cv_.notify_all();
+    return acquired;
 }
 
 bool TransactionManager::GetState(txn_id_t txn_id,

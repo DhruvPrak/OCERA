@@ -185,7 +185,112 @@ int main() {
         CHECK(ids.size() == 800);
     }
     std::cout << "    PASSED\n";
+    std::cout << "[10] Commit while a lock request is blocked cancels "
+                 "the request...\n";
+    {
+        LockManager lm;
+        TransactionManager tm(lm);
 
+        txn_id_t t1 = tm.Begin();
+        txn_id_t t2 = tm.Begin();
+
+        // T1 holds the resource exclusively.
+        CHECK(tm.Lock(t1, 10, LockMode::Exclusive));
+
+        std::atomic<int> result{-1};
+
+        // T2 requests the same resource and must wait.
+        std::thread waiter([&] {
+            result = tm.Lock(t2, 10, LockMode::Exclusive);
+        });
+
+        // Wait until the Lock Manager confirms T2 is actually queued.
+        const auto deadline =
+            std::chrono::steady_clock::now() + 2s;
+
+        bool is_waiting = false;
+
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto edges = lm.GetWaitForEdges();
+
+            for (const auto& edge : edges) {
+                if (edge.first == t2 && edge.second == t1) {
+                    is_waiting = true;
+                    break;
+                }
+            }
+
+            if (is_waiting) break;
+
+            std::this_thread::sleep_for(1ms);
+        }
+
+        CHECK(is_waiting);
+
+        // Commit T2 while its Lock() call is blocked.
+        CHECK(tm.Commit(t2));
+
+        waiter.join();
+
+        // The blocked request must not acquire a lock.
+        CHECK(result == 0);
+        CHECK(StateOf(tm, t2) == TransactionState::Committed);
+        CHECK(lm.NumLocksHeld(t2) == 0);
+
+        CHECK(tm.Commit(t1));
+    }
+    std::cout << "    PASSED\n";
+    std::cout << "[11] Abort while a lock request is blocked cancels "
+                 "the request...\n";
+    {
+        LockManager lm;
+        TransactionManager tm(lm);
+
+        txn_id_t t1 = tm.Begin();
+        txn_id_t t2 = tm.Begin();
+
+        CHECK(tm.Lock(t1, 10, LockMode::Exclusive));
+
+        std::atomic<int> result{-1};
+
+        std::thread waiter([&] {
+            result = tm.Lock(t2, 10, LockMode::Exclusive);
+        });
+
+        // Wait until T2 is actually queued behind T1.
+        const auto deadline =
+            std::chrono::steady_clock::now() + 2s;
+
+        bool is_waiting = false;
+
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto edges = lm.GetWaitForEdges();
+
+            for (const auto& edge : edges) {
+                if (edge.first == t2 && edge.second == t1) {
+                    is_waiting = true;
+                    break;
+                }
+            }
+
+            if (is_waiting) break;
+
+            std::this_thread::sleep_for(1ms);
+        }
+
+        CHECK(is_waiting);
+
+        CHECK(tm.Abort(t2));
+
+        waiter.join();
+
+        CHECK(result == 0);
+        CHECK(StateOf(tm, t2) == TransactionState::Aborted);
+        CHECK(lm.NumLocksHeld(t2) == 0);
+
+        CHECK(tm.Commit(t1));
+    }
+    std::cout << "    PASSED\n";
     std::cout << "\nAll transaction manager tests passed.\n";
     return 0;
 }

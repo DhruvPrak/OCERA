@@ -1,6 +1,9 @@
 #pragma once
+#include <condition_variable>
+#include <cstddef>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "txn/lock_manager.h"
 #include "txn/txn_types.h"
@@ -52,8 +55,16 @@ private:
 
     LockManager& lock_manager_;
     mutable std::mutex mutex_;
+    std::condition_variable cv_;
+
     txn_id_t next_id_ = 1;
     std::unordered_map<txn_id_t, TransactionState> states_;
+
+    // Number of Lock() calls currently executing for each transaction.
+    std::unordered_map<txn_id_t, std::size_t> in_flight_locks_;
+
+    // Transactions whose Commit()/Abort() operation is in progress.
+    std::unordered_set<txn_id_t> finishing_;
 };
 
 }  // namespace ocera
