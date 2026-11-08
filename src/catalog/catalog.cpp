@@ -5,6 +5,26 @@
 #include <utility>
 
 namespace ocera {
+namespace {
+
+bool SameIdentifierTuple(const std::vector<std::string>& lhs,
+                         const std::vector<std::string>& rhs) {
+    if (lhs.size() != rhs.size()) return false;
+    for (std::size_t i = 0; i < lhs.size(); ++i) {
+        if (NormalizeIdentifier(lhs[i]) != NormalizeIdentifier(rhs[i])) return false;
+    }
+    return true;
+}
+
+bool HasCandidateKey(const TableSchema& table,
+                     const std::vector<std::string>& columns) {
+    for (const auto& key : table.key_constraints) {
+        if (SameIdentifierTuple(key.columns, columns)) return true;
+    }
+    return false;
+}
+
+}  // namespace
 
 std::string NormalizeIdentifier(const std::string& name) {
     std::string out = name;
@@ -75,6 +95,87 @@ void Catalog::CreateTable(const sql::CreateTableStatement& stmt) {
         if (!seen_constraints.insert(signature).second)
             throw CatalogError("duplicate key constraint on table '" + stmt.table + "'");
         schema.key_constraints.push_back({constraint.type, std::move(canonical_columns)});
+    }
+
+    std::set<std::string> seen_foreign_keys;
+    for (const auto& constraint : stmt.foreign_key_constraints) {
+        if (constraint.columns.empty() || constraint.referenced_columns.empty()) {
+            throw CatalogError("foreign-key constraint must contain at least one column");
+        }
+        if (constraint.columns.size() != constraint.referenced_columns.size()) {
+            throw CatalogError("foreign-key column count does not match referenced column count");
+        }
+
+        std::vector<std::string> local_columns;
+        std::vector<std::string> referenced_columns;
+        std::set<std::string> local_seen;
+        std::set<std::string> referenced_seen;
+        for (const auto& name : constraint.columns) {
+            const int index = schema.ColumnIndex(name);
+            if (index < 0) {
+                throw CatalogError("foreign key references unknown column '" + name + "'");
+            }
+            const std::string canonical = schema.columns[static_cast<std::size_t>(index)].name;
+            if (!local_seen.insert(NormalizeIdentifier(canonical)).second) {
+                throw CatalogError("foreign key contains duplicate column '" + name + "'");
+            }
+            local_columns.push_back(canonical);
+        }
+
+        const TableSchema* referenced_table = nullptr;
+        const std::string referenced_key = NormalizeIdentifier(constraint.referenced_table);
+        if (referenced_key == key) {
+            referenced_table = &schema;  // Permit a self-referencing foreign key.
+        } else {
+            referenced_table = GetTable(constraint.referenced_table);
+        }
+        if (!referenced_table) {
+            throw CatalogError("referenced table '" + constraint.referenced_table +
+                               "' does not exist");
+        }
+
+        for (const auto& name : constraint.referenced_columns) {
+            const int index = referenced_table->ColumnIndex(name);
+            if (index < 0) {
+                throw CatalogError("referenced table '" + referenced_table->name +
+                                   "' has no column '" + name + "'");
+            }
+            const std::string canonical =
+                referenced_table->columns[static_cast<std::size_t>(index)].name;
+            if (!referenced_seen.insert(NormalizeIdentifier(canonical)).second) {
+                throw CatalogError("foreign key contains duplicate referenced column '" +
+                                   name + "'");
+            }
+            referenced_columns.push_back(canonical);
+        }
+
+        if (!HasCandidateKey(*referenced_table, referenced_columns)) {
+            throw CatalogError("referenced columns on table '" + referenced_table->name +
+                               "' must match a PRIMARY KEY or UNIQUE constraint");
+        }
+
+        for (std::size_t i = 0; i < local_columns.size(); ++i) {
+            const int local_index = schema.ColumnIndex(local_columns[i]);
+            const int parent_index = referenced_table->ColumnIndex(referenced_columns[i]);
+            if (schema.columns[static_cast<std::size_t>(local_index)].type !=
+                referenced_table->columns[static_cast<std::size_t>(parent_index)].type) {
+                throw CatalogError("foreign-key column '" + local_columns[i] +
+                                   "' has a different type from referenced column '" +
+                                   referenced_columns[i] + "'");
+            }
+        }
+
+        std::string signature = NormalizeIdentifier(referenced_table->name) + ":";
+        for (const auto& name : local_columns) signature += NormalizeIdentifier(name) + ";";
+        signature += "->";
+        for (const auto& name : referenced_columns) signature += NormalizeIdentifier(name) + ";";
+        if (!seen_foreign_keys.insert(signature).second) {
+            throw CatalogError("duplicate foreign-key constraint on table '" + stmt.table + "'");
+        }
+
+        schema.foreign_key_constraints.push_back(
+            {std::move(local_columns), referenced_table->name,
+             std::move(referenced_columns)});
     }
     tables_.emplace(key, std::move(schema));
 }

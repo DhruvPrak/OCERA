@@ -77,13 +77,38 @@ private:
         if (IsKeyword(Peek(), "INDEX")) return ParseCreateIndex();
         Fail("expected TABLE or INDEX after CREATE", Peek().position);
     }
+    std::vector<std::string> ParseIdentifierList(const char* what) {
+        std::vector<std::string> names;
+        names.push_back(ExpectIdentifier(what).text);
+        while (IsSymbol(Peek(), ",")) {
+            Advance();
+            names.push_back(ExpectIdentifier(what).text);
+        }
+        return names;
+    }
+
     CreateTableStatement ParseCreateTable() {
         Advance();
         CreateTableStatement s;
         s.table = ExpectIdentifier("table name").text;
         ExpectSymbol("(");
         while (true) {
-            if (IsKeyword(Peek(), "PRIMARY") || IsKeyword(Peek(), "UNIQUE")) {
+            if (IsKeyword(Peek(), "FOREIGN")) {
+                ForeignKeyConstraint constraint;
+                constraint.position = Peek().position;
+                Advance();
+                ExpectKeyword("KEY");
+                ExpectSymbol("(");
+                constraint.columns = ParseIdentifierList("foreign-key column name");
+                ExpectSymbol(")");
+                ExpectKeyword("REFERENCES");
+                constraint.referenced_table = ExpectIdentifier("referenced table name").text;
+                ExpectSymbol("(");
+                constraint.referenced_columns =
+                    ParseIdentifierList("referenced column name");
+                ExpectSymbol(")");
+                s.foreign_key_constraints.push_back(std::move(constraint));
+            } else if (IsKeyword(Peek(), "PRIMARY") || IsKeyword(Peek(), "UNIQUE")) {
                 KeyConstraint constraint;
                 const Token& kind = Advance();
                 constraint.position = kind.position;

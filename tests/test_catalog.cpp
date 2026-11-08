@@ -342,6 +342,131 @@ int main() {
     }
     Report("key metadata / validation", before);
 
+    std::cout << "[14] FOREIGN KEY Catalog metadata and validation" << std::endl;
+    before = g_failures;
+    {
+        Catalog c;
+        CreateTableStatement parent = MakeCreate(
+            "Students", {{"student_id", ColumnType::INT}, {"email", ColumnType::TEXT}});
+        parent.key_constraints.push_back(
+            {KeyConstraintType::PRIMARY_KEY, {"student_id"}, 0});
+        parent.key_constraints.push_back(
+            {KeyConstraintType::UNIQUE, {"email"}, 0});
+        c.CreateTable(parent);
+
+        CreateTableStatement child = MakeCreate(
+            "Enrollments", {{"student_id", ColumnType::INT}, {"course_id", ColumnType::INT}});
+        child.key_constraints.push_back(
+            {KeyConstraintType::PRIMARY_KEY, {"student_id", "course_id"}, 0});
+        child.foreign_key_constraints.push_back(
+            {{"student_id"}, "students", {"STUDENT_ID"}, 0});
+        c.CreateTable(child);
+        const TableSchema* child_schema = c.GetTable("enrollments");
+        Check(child_schema && child_schema->foreign_key_constraints.size() == 1,
+              "single-column FK metadata stored");
+        if (child_schema && !child_schema->foreign_key_constraints.empty()) {
+            const auto& fk = child_schema->foreign_key_constraints[0];
+            Check(fk.columns[0] == "student_id" &&
+                  fk.referenced_table == "Students" &&
+                  fk.referenced_columns[0] == "student_id",
+                  "FK identifiers canonicalized to catalog spelling");
+        }
+
+        CreateTableStatement composite_parent = MakeCreate(
+            "StudentCourses", {{"student_id", ColumnType::INT}, {"course_id", ColumnType::INT}});
+        composite_parent.key_constraints.push_back(
+            {KeyConstraintType::PRIMARY_KEY, {"student_id", "course_id"}, 0});
+        c.CreateTable(composite_parent);
+
+        CreateTableStatement composite_child = MakeCreate(
+            "Grades", {{"student_id", ColumnType::INT}, {"course_id", ColumnType::INT},
+                       {"grade", ColumnType::INT}});
+        composite_child.foreign_key_constraints.push_back(
+            {{"student_id", "course_id"}, "StudentCourses",
+             {"student_id", "course_id"}, 0});
+        Check(Valid(composite_child, c), "composite FK passes semantic validation");
+        c.CreateTable(composite_child);
+        const TableSchema* grades = c.GetTable("grades");
+        Check(grades && grades->foreign_key_constraints.size() == 1 &&
+              grades->foreign_key_constraints[0].columns.size() == 2,
+              "composite FK metadata stored");
+
+        CreateTableStatement unique_child = MakeCreate(
+            "EmailAliases", {{"email", ColumnType::TEXT}});
+        unique_child.foreign_key_constraints.push_back(
+            {{"email"}, "Students", {"email"}, 0});
+        Check(Valid(unique_child, c), "FK may reference a UNIQUE key");
+
+        CreateTableStatement missing_table = MakeCreate(
+            "BadMissingTable", {{"student_id", ColumnType::INT}});
+        missing_table.foreign_key_constraints.push_back(
+            {{"student_id"}, "NoSuchParent", {"id"}, 0});
+        Check(!Valid(missing_table, c), "validator rejects missing referenced table");
+        Check(ThrowsCatalog(c, missing_table), "missing referenced table rejected");
+
+        CreateTableStatement missing_parent_column = MakeCreate(
+            "BadMissingColumn", {{"student_id", ColumnType::INT}});
+        missing_parent_column.foreign_key_constraints.push_back(
+            {{"student_id"}, "Students", {"missing"}, 0});
+        Check(ThrowsCatalog(c, missing_parent_column), "missing referenced column rejected");
+
+        CreateTableStatement missing_local_column = MakeCreate(
+            "BadLocalColumn", {{"student_id", ColumnType::INT}});
+        missing_local_column.foreign_key_constraints.push_back(
+            {{"missing"}, "Students", {"student_id"}, 0});
+        Check(ThrowsCatalog(c, missing_local_column), "missing local column rejected");
+
+        CreateTableStatement not_unique = MakeCreate(
+            "BadNotUnique", {{"name", ColumnType::TEXT}});
+        not_unique.foreign_key_constraints.push_back(
+            {{"name"}, "Students", {"name"}, 0});
+        Check(!Valid(not_unique, c), "validator rejects non-unique referenced columns");
+        Check(ThrowsCatalog(c, not_unique), "non-unique referenced columns rejected");
+
+        CreateTableStatement wrong_types = MakeCreate(
+            "BadTypes", {{"student_id", ColumnType::TEXT}});
+        wrong_types.foreign_key_constraints.push_back(
+            {{"student_id"}, "Students", {"student_id"}, 0});
+        Check(!Valid(wrong_types, c), "validator rejects mismatched types");
+        Check(ThrowsCatalog(c, wrong_types), "mismatched types rejected");
+
+        CreateTableStatement wrong_arity = MakeCreate(
+            "BadArity", {{"student_id", ColumnType::INT}});
+        wrong_arity.foreign_key_constraints.push_back(
+            {{"student_id"}, "StudentCourses", {"student_id", "course_id"}, 0});
+        Check(ThrowsCatalog(c, wrong_arity), "mismatched column counts rejected");
+
+        CreateTableStatement duplicate_columns = MakeCreate(
+            "BadDuplicateFK", {{"student_id", ColumnType::INT}, {"course_id", ColumnType::INT}});
+        duplicate_columns.foreign_key_constraints.push_back(
+            {{"student_id", "STUDENT_ID"}, "StudentCourses",
+             {"student_id", "course_id"}, 0});
+        Check(ThrowsCatalog(c, duplicate_columns), "duplicate local FK columns rejected");
+
+        CreateTableStatement wrong_order = MakeCreate(
+            "BadOrder", {{"student_id", ColumnType::INT}, {"course_id", ColumnType::INT}});
+        wrong_order.foreign_key_constraints.push_back(
+            {{"student_id", "course_id"}, "StudentCourses",
+             {"course_id", "student_id"}, 0});
+        Check(ThrowsCatalog(c, wrong_order),
+              "referenced tuple must match candidate-key column order");
+
+        CreateTableStatement self_reference = MakeCreate(
+            "Employees", {{"id", ColumnType::INT}, {"manager_id", ColumnType::INT}});
+        self_reference.key_constraints.push_back(
+            {KeyConstraintType::PRIMARY_KEY, {"id"}, 0});
+        self_reference.foreign_key_constraints.push_back(
+            {{"manager_id"}, "Employees", {"id"}, 0});
+        Check(!ThrowsCatalog(c, self_reference), "self-referencing FK accepted");
+
+        Check(!c.HasTable("BadMissingTable") && !c.HasTable("BadMissingColumn") &&
+              !c.HasTable("BadLocalColumn") && !c.HasTable("BadNotUnique") &&
+              !c.HasTable("BadTypes") && !c.HasTable("BadArity") &&
+              !c.HasTable("BadDuplicateFK") && !c.HasTable("BadOrder"),
+              "failed FK registrations publish no partial table metadata");
+    }
+    Report("FOREIGN KEY metadata / validation", before);
+
     if (g_failures == 0) {
         std::cout << "\nAll catalog tests passed.\n";
         return 0;

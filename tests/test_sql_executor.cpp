@@ -356,46 +356,89 @@ int main() {
         ));
 
         assert(!error.empty());
-        std::cout << "[22] PRIMARY KEY and UNIQUE enforcement" << std::endl;
+        std::cout << "[24] Reject child INSERT without a parent and preserve rows\n";
         assert(executor.Execute(
-            "CREATE TABLE keyed (id INT PRIMARY KEY, email TEXT UNIQUE, label TEXT);",
+            "CREATE TABLE fk_parent (id INT PRIMARY KEY, label TEXT);",
             nullptr, &error));
         assert(executor.Execute(
-            "INSERT INTO keyed VALUES (1, 'a@example.com', 'first');",
+            "CREATE TABLE fk_child (id INT PRIMARY KEY, parent_id INT, "
+            "FOREIGN KEY (parent_id) REFERENCES fk_parent(id));",
             nullptr, &error));
         assert(!executor.Execute(
-            "INSERT INTO keyed VALUES (1, 'b@example.com', 'duplicate id');",
-            nullptr, &error));
-        assert(!executor.Execute(
-            "INSERT INTO keyed VALUES (2, 'a@example.com', 'duplicate email');",
-            nullptr, &error));
-        QueryResult keyed_result;
-        assert(executor.Execute("SELECT * FROM keyed;", nullptr, &error, &keyed_result));
-        assert(keyed_result.rows.size() == 1);
+            "INSERT INTO fk_child VALUES (10, 1);", nullptr, &error));
+        assert(!error.empty());
+        assert(executor.Execute("SELECT * FROM fk_child;", nullptr, &error, &result));
+        assert(result.rows.empty());
 
-        std::cout << "[23] Composite PRIMARY KEY and UPDATE enforcement" << std::endl;
+        std::cout << "[25] Allow valid child INSERT; reject invalid child UPDATE\n";
         assert(executor.Execute(
-            "CREATE TABLE enrollments (student_id INT, course_id INT, "
-            "PRIMARY KEY (student_id, course_id));", nullptr, &error));
+            "INSERT INTO fk_parent VALUES (1, 'parent one');", nullptr, &error));
         assert(executor.Execute(
-            "INSERT INTO enrollments VALUES (1, 10);", nullptr, &error));
-        assert(executor.Execute(
-            "INSERT INTO enrollments VALUES (1, 11);", nullptr, &error));
+            "INSERT INTO fk_child VALUES (10, 1);", nullptr, &error));
         assert(!executor.Execute(
-            "INSERT INTO enrollments VALUES (1, 10);", nullptr, &error));
-        assert(executor.Execute(
-            "INSERT INTO enrollments VALUES (2, 10);", nullptr, &error));
+            "UPDATE fk_child SET parent_id = 999 WHERE id = 10;", nullptr, &error));
+        assert(executor.Execute("SELECT * FROM fk_child;", nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Int(10)));
+        assert(SameValue(result.rows[0][1], Int(1)));
+
+        std::cout << "[26] RESTRICT parent DELETE and referenced-key UPDATE\n";
         assert(!executor.Execute(
-            "UPDATE enrollments SET student_id = 1 WHERE course_id = 10;",
+            "DELETE FROM fk_parent WHERE id = 1;", nullptr, &error));
+        assert(!executor.Execute(
+            "UPDATE fk_parent SET id = 2 WHERE id = 1;", nullptr, &error));
+        assert(executor.Execute("SELECT * FROM fk_parent;", nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Int(1)));
+        assert(executor.Execute(
+            "DELETE FROM fk_child WHERE id = 10;", nullptr, &error));
+        assert(executor.Execute(
+            "DELETE FROM fk_parent WHERE id = 1;", nullptr, &error));
+
+        std::cout << "[27] Enforce composite foreign keys\n";
+        assert(executor.Execute(
+            "CREATE TABLE fk_parent_pair (a INT, b INT, "
+            "PRIMARY KEY (a, b));", nullptr, &error));
+        assert(executor.Execute(
+            "CREATE TABLE fk_child_pair (id INT PRIMARY KEY, x INT, y INT, "
+            "FOREIGN KEY (x, y) REFERENCES fk_parent_pair(a, b));",
             nullptr, &error));
-        QueryResult enrollment_result;
-        assert(executor.Execute("SELECT * FROM enrollments;", nullptr, &error,
-                                &enrollment_result));
-        assert(enrollment_result.rows.size() == 3);
-        assert(enrollment_result.rows[0][0].int_value == 1 &&
-               enrollment_result.rows[0][1].int_value == 10);
-        assert(enrollment_result.rows[2][0].int_value == 2 &&
-               enrollment_result.rows[2][1].int_value == 10);
+        assert(!executor.Execute(
+            "INSERT INTO fk_child_pair VALUES (1, 7, 8);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO fk_parent_pair VALUES (7, 8);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO fk_child_pair VALUES (1, 7, 8);", nullptr, &error));
+        assert(!executor.Execute(
+            "UPDATE fk_child_pair SET y = 9 WHERE id = 1;", nullptr, &error));
+        assert(!executor.Execute(
+            "DELETE FROM fk_parent_pair WHERE a = 7 AND b = 8;",
+            nullptr, &error));
+        assert(!executor.Execute(
+            "UPDATE fk_parent_pair SET b = 9 WHERE a = 7 AND b = 8;",
+            nullptr, &error));
+        assert(executor.Execute(
+            "SELECT * FROM fk_parent_pair;", nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Int(7)));
+        assert(SameValue(result.rows[0][1], Int(8)));
+        assert(executor.Execute(
+            "DELETE FROM fk_child_pair WHERE id = 1;", nullptr, &error));
+        assert(executor.Execute(
+            "DELETE FROM fk_parent_pair WHERE a = 7 AND b = 8;",
+            nullptr, &error));
+
+        std::cout << "[28] Enforce self-referencing foreign keys\n";
+        assert(executor.Execute(
+            "CREATE TABLE fk_employee (id INT PRIMARY KEY, manager_id INT, "
+            "FOREIGN KEY (manager_id) REFERENCES fk_employee(id));",
+            nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO fk_employee VALUES (1, 1);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO fk_employee VALUES (2, 1);", nullptr, &error));
+        assert(!executor.Execute(
+            "INSERT INTO fk_employee VALUES (3, 99);", nullptr, &error));
 
         bpm.FlushAllPages();
     }

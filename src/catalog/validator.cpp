@@ -68,6 +68,49 @@ void CheckOptionalCondition(const std::optional<sql::Condition>& cond,
     if (cond) CheckCondition(*cond, table);
 }
 
+bool SameIdentifierTuple(const std::vector<std::string>& lhs,
+                         const std::vector<std::string>& rhs) {
+    if (lhs.size() != rhs.size()) return false;
+    for (std::size_t i = 0; i < lhs.size(); ++i) {
+        if (NormalizeIdentifier(lhs[i]) != NormalizeIdentifier(rhs[i])) return false;
+    }
+    return true;
+}
+
+bool HasCandidateKey(const TableSchema& table,
+                     const std::vector<std::string>& columns) {
+    for (const auto& key : table.key_constraints) {
+        if (SameIdentifierTuple(key.columns, columns)) return true;
+    }
+    return false;
+}
+
+bool HasCandidateKey(const sql::CreateTableStatement& stmt,
+                     const std::vector<std::string>& columns) {
+    for (const auto& key : stmt.key_constraints) {
+        if (SameIdentifierTuple(key.columns, columns)) return true;
+    }
+    return false;
+}
+
+const sql::ColumnDefinition* FindColumnDefinition(
+    const sql::CreateTableStatement& stmt, const std::string& name) {
+    for (const auto& column : stmt.columns) {
+        if (NormalizeIdentifier(column.name) == NormalizeIdentifier(name))
+            return &column;
+    }
+    return nullptr;
+}
+
+int FindColumnIndex(const sql::CreateTableStatement& stmt,
+                    const std::string& name) {
+    for (std::size_t i = 0; i < stmt.columns.size(); ++i) {
+        if (NormalizeIdentifier(stmt.columns[i].name) == NormalizeIdentifier(name))
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
 void ValidateCreateIndex(const sql::CreateIndexStatement& stmt,
                          const Catalog& catalog) {
     if (stmt.index_name.empty()) throw SemanticError("index name is empty");
@@ -130,6 +173,84 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
             if (!seen_constraints.insert(signature).second)
                 throw SemanticError("duplicate key constraint on table '" + s->table +
                                     "'" + At(constraint.position));
+        }
+
+        std::set<std::string> seen_foreign_keys;
+        for (const auto& constraint : s->foreign_key_constraints) {
+            if (constraint.columns.empty() || constraint.referenced_columns.empty())
+                throw SemanticError("foreign-key constraint must contain at least one column" +
+                                    At(constraint.position));
+            if (constraint.columns.size() != constraint.referenced_columns.size())
+                throw SemanticError("foreign-key column count does not match referenced column count" +
+                                    At(constraint.position));
+
+            std::set<std::string> local_seen;
+            std::set<std::string> referenced_seen;
+            for (const auto& name : constraint.columns) {
+                if (!seen.count(NormalizeIdentifier(name)))
+                    throw SemanticError("foreign key references unknown column '" + name + "'" +
+                                        At(constraint.position));
+                if (!local_seen.insert(NormalizeIdentifier(name)).second)
+                    throw SemanticError("foreign key contains duplicate column '" + name + "'" +
+                                        At(constraint.position));
+            }
+
+            const bool self_reference =
+                NormalizeIdentifier(constraint.referenced_table) ==
+                NormalizeIdentifier(s->table);
+            const TableSchema* parent = self_reference
+                ? nullptr : catalog.GetTable(constraint.referenced_table);
+            if (!self_reference && !parent)
+                throw SemanticError("referenced table '" + constraint.referenced_table +
+                                    "' does not exist" + At(constraint.position));
+
+            for (const auto& name : constraint.referenced_columns) {
+                const int index = self_reference
+                    ? FindColumnIndex(*s, name)
+                    : parent->ColumnIndex(name);
+                if (index < 0)
+                    throw SemanticError("referenced table '" + constraint.referenced_table +
+                                        "' has no column '" + name + "'" +
+                                        At(constraint.position));
+                if (!referenced_seen.insert(NormalizeIdentifier(name)).second)
+                    throw SemanticError("foreign key contains duplicate referenced column '" +
+                                        name + "'" + At(constraint.position));
+            }
+
+            const bool candidate_key = self_reference
+                ? HasCandidateKey(*s, constraint.referenced_columns)
+                : HasCandidateKey(*parent, constraint.referenced_columns);
+            if (!candidate_key)
+                throw SemanticError("referenced columns on table '" +
+                                    constraint.referenced_table +
+                                    "' must match a PRIMARY KEY or UNIQUE constraint" +
+                                    At(constraint.position));
+
+            for (std::size_t i = 0; i < constraint.columns.size(); ++i) {
+                const auto* local = FindColumnDefinition(*s, constraint.columns[i]);
+                const sql::ColumnType parent_type = self_reference
+                    ? FindColumnDefinition(*s, constraint.referenced_columns[i])->type
+                    : parent->columns[static_cast<std::size_t>(
+                          parent->ColumnIndex(constraint.referenced_columns[i]))].type;
+                if (local->type != parent_type)
+                    throw SemanticError("foreign-key column '" + constraint.columns[i] +
+                                        "' has a different type from referenced column '" +
+                                        constraint.referenced_columns[i] + "'" +
+                                        At(constraint.position));
+            }
+
+            const std::string parent_name =
+                self_reference ? NormalizeIdentifier(s->table)
+                               : NormalizeIdentifier(parent->name);
+            std::string signature = parent_name + ":";
+            for (const auto& name : constraint.columns)
+                signature += NormalizeIdentifier(name) + ";";
+            signature += "->";
+            for (const auto& name : constraint.referenced_columns)
+                signature += NormalizeIdentifier(name) + ";";
+            if (!seen_foreign_keys.insert(signature).second)
+                throw SemanticError("duplicate foreign-key constraint on table '" +
+                                    s->table + "'" + At(constraint.position));
         }
     } else if (const auto* s = std::get_if<sql::CreateIndexStatement>(&stmt)) {
         ValidateCreateIndex(*s, catalog);

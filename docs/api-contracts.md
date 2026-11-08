@@ -596,3 +596,69 @@ CMake targets: `ocera_sql_executor`, `test_sql_executor`.
 | 2026-10-14 | Existing baseline documentation separated implemented interfaces from proposals. |
 | 2026-11-07 | Consolidated duplicated sections; updated record, table, Catalog, SQL, B+Tree, transaction, and build-target status from `feature/indexing-sql`; added the schema-aware serializer as an explicitly unimplemented proposal. |
 | 2026-11-07 | Documented the implemented and tested schema-aware RecordSerializer and its encoding contract. |
+| 2026-11-08 | Documented SQL executor foreign-key enforcement and RESTRICT semantics. |
+
+
+## 11. Foreign-key metadata (feature/indexing-sql)
+
+The current SQL/Catalog implementation extends `CreateTableStatement` with:
+
+```cpp
+struct ForeignKeyConstraint {
+    std::vector<std::string> columns;
+    std::string referenced_table;
+    std::vector<std::string> referenced_columns;
+    std::size_t position = 0;
+};
+
+struct ForeignKeySchema {
+    std::vector<std::string> columns;
+    std::string referenced_table;
+    std::vector<std::string> referenced_columns;
+};
+```
+
+`CreateTableStatement::foreign_key_constraints` contains parsed declarations.
+`TableSchema::foreign_key_constraints` contains validated Catalog metadata.
+Identifiers stored in Catalog metadata use the original spelling of the registered
+table and column names.
+
+Supported declaration syntax is table-level:
+
+```sql
+FOREIGN KEY (child_col [, child_col ...])
+REFERENCES parent_table (parent_col [, parent_col ...])
+```
+
+Rules enforced during `Catalog::CreateTable()` and `Validate()`:
+
+- Both column lists must be non-empty and have equal lengths.
+- Local and referenced column names must be unique within their respective lists.
+- All local columns and referenced columns must exist.
+- The referenced table must already be registered, except that a table may
+  reference its own candidate key.
+- The referenced column tuple, in the declared order, must exactly match a
+  PRIMARY KEY or UNIQUE constraint on the referenced table.
+- Corresponding local and referenced columns must have the same `ColumnType`.
+- Invalid definitions are rejected before the new table is published.
+
+The Catalog remains in-memory only. The SQL executor enforces these relationships
+for DML operations using row scans:
+
+- `INSERT` rejects a child row unless its referenced tuple exists.
+- `UPDATE` validates the complete candidate row set before writing; both outgoing
+  references and references from other tables to the updated table are checked.
+- `DELETE` validates the complete post-delete row set before deleting; referenced
+  parent rows cannot be removed while child rows still point to them.
+- Self-referencing and composite foreign keys use the same tuple comparison rules.
+
+The initial referential action is `RESTRICT`: parent-key updates and parent-row
+deletes are rejected when they would leave a child reference unresolved. `CASCADE`
+and `SET NULL` are not supported. The current SQL value model has no NULL
+representation.
+
+Constraint validation happens before DML writes, so a foreign-key rejection does
+not partially apply the requested statement. This is statement-level prevalidation,
+not transaction rollback or crash atomicity: an underlying storage failure while
+writing multiple rows can still leave a partial operation. The executor remains
+single-threaded/non-thread-safe and is not integrated with transaction locks or WAL.

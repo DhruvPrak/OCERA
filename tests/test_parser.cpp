@@ -345,6 +345,53 @@ int main() {
     }
     Report("edge cases", before);
 
+    std::cout << "[22] FOREIGN KEY declarations" << std::endl;
+    before = g_failures;
+    {
+        auto single = ParseAs<CreateTableStatement>(
+            "CREATE TABLE enrollments (student_id INT, "
+            "FOREIGN KEY (student_id) REFERENCES students (id))");
+        Check(single.foreign_key_constraints.size() == 1,
+              "single-column foreign key parsed");
+        if (!single.foreign_key_constraints.empty()) {
+            const auto& fk = single.foreign_key_constraints[0];
+            Check(fk.columns.size() == 1 && fk.columns[0] == "student_id",
+                  "local foreign-key column retained");
+            Check(fk.referenced_table == "students" &&
+                  fk.referenced_columns.size() == 1 &&
+                  fk.referenced_columns[0] == "id",
+                  "referenced table and column retained");
+        }
+
+        auto composite = ParseAs<CreateTableStatement>(
+            "CREATE TABLE enrollment (student_id INT, course_id INT, "
+            "FOREIGN KEY (student_id, course_id) "
+            "REFERENCES student_courses (student_id, course_id))");
+        Check(composite.foreign_key_constraints.size() == 1,
+              "composite foreign key parsed");
+        if (!composite.foreign_key_constraints.empty()) {
+            const auto& fk = composite.foreign_key_constraints[0];
+            Check(fk.columns.size() == 2 && fk.referenced_columns.size() == 2,
+                  "both composite column lists retained");
+            Check(fk.columns[1] == "course_id" &&
+                  fk.referenced_columns[1] == "course_id",
+                  "composite column order retained");
+        }
+        Check(ParseFails("CREATE TABLE bad (a INT, FOREIGN KEY () REFERENCES p (id))"),
+              "empty local foreign-key list rejected");
+        Check(ParseFails("CREATE TABLE bad (a INT, FOREIGN KEY (a) REFERENCES p ())"),
+              "empty referenced-column list rejected");
+        Check(ParseFails("CREATE TABLE bad (a INT, FOREIGN KEY (a,) REFERENCES p (id))"),
+              "trailing comma in local foreign-key list rejected");
+        Check(ParseFails("CREATE TABLE bad (a INT, FOREIGN KEY (a) REFERENCES p (id,))"),
+              "trailing comma in referenced list rejected");
+        Check(ParseFails("CREATE TABLE bad (a INT, FOREIGN (a) REFERENCES p (id))"),
+              "FOREIGN requires KEY");
+        Check(ParseFails("CREATE TABLE bad (a INT, FOREIGN KEY (a) p (id))"),
+              "REFERENCES keyword required");
+    }
+    Report("FOREIGN KEY declarations", before);
+
     if (g_failures == 0) {
         std::cout << "\nAll parser tests passed.\n";
         return 0;

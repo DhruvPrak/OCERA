@@ -48,6 +48,13 @@ struct KeyConstraint {
     std::size_t position = 0;
 };
 
+struct ForeignKeyConstraint {
+    std::vector<std::string> columns;
+    std::string referenced_table;
+    std::vector<std::string> referenced_columns;
+    std::size_t position = 0;
+};
+
 struct Assignment {
     std::string column;
     Value value;
@@ -58,6 +65,7 @@ struct CreateTableStatement {
     std::string table;
     std::vector<ColumnDefinition> columns;
     std::vector<KeyConstraint> key_constraints;
+    std::vector<ForeignKeyConstraint> foreign_key_constraints;
 };
 
 struct CreateIndexStatement {

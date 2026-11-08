@@ -26,10 +26,17 @@ struct KeySchema {
     std::vector<std::string> columns;
 };
 
+struct ForeignKeySchema {
+    std::vector<std::string> columns;
+    std::string referenced_table;
+    std::vector<std::string> referenced_columns;
+};
+
 struct TableSchema {
     std::string name;
     std::vector<ColumnSchema> columns;
     std::vector<KeySchema> key_constraints;
+    std::vector<ForeignKeySchema> foreign_key_constraints;
 
     // Position of the column (0-based, case-insensitive), or -1 if absent.
     int ColumnIndex(const std::string& column_name) const;

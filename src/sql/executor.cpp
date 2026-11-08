@@ -109,6 +109,139 @@ bool ValidateKeyConstraints(const TableSchema& schema,
     return true;
 }
 
+using ValueRows = std::vector<std::vector<sql::Value>>;
+using StoredRows = std::vector<std::pair<RID, std::vector<sql::Value>>>;
+
+bool RowsMatchColumns(const TableSchema& left_schema,
+                      const std::vector<std::string>& left_columns,
+                      const std::vector<sql::Value>& left_row,
+                      const TableSchema& right_schema,
+                      const std::vector<std::string>& right_columns,
+                      const std::vector<sql::Value>& right_row) {
+    if (left_columns.size() != right_columns.size()) return false;
+    for (std::size_t i = 0; i < left_columns.size(); ++i) {
+        const int left_index = left_schema.ColumnIndex(left_columns[i]);
+        const int right_index = right_schema.ColumnIndex(right_columns[i]);
+        if (left_index < 0 || right_index < 0 ||
+            static_cast<std::size_t>(left_index) >= left_row.size() ||
+            static_cast<std::size_t>(right_index) >= right_row.size() ||
+            !ValuesEqual(left_row[static_cast<std::size_t>(left_index)],
+                         right_row[static_cast<std::size_t>(right_index)])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool TupleExists(const TableSchema& source_schema,
+                 const std::vector<std::string>& source_columns,
+                 const std::vector<sql::Value>& source_row,
+                 const TableSchema& target_schema,
+                 const std::vector<std::string>& target_columns,
+                 const ValueRows& target_rows) {
+    for (const auto& target_row : target_rows) {
+        if (RowsMatchColumns(source_schema, source_columns, source_row,
+                             target_schema, target_columns, target_row)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <typename ScanRows>
+bool ValidateOutgoingForeignKeys(const TableSchema& child_schema,
+                                 const ValueRows& child_rows,
+                                 const Catalog& catalog,
+                                 ScanRows&& scan_rows,
+                                 std::string* error) {
+    for (const auto& foreign_key : child_schema.foreign_key_constraints) {
+        const TableSchema* parent_schema =
+            catalog.GetTable(foreign_key.referenced_table);
+        if (parent_schema == nullptr) {
+            SetError(error, "referenced table '" + foreign_key.referenced_table +
+                            "' does not exist in the Catalog");
+            return false;
+        }
+
+        ValueRows scanned_parent_rows;
+        const ValueRows* parent_rows = &scanned_parent_rows;
+        if (NormalizeIdentifier(child_schema.name) ==
+            NormalizeIdentifier(parent_schema->name)) {
+            // Use the candidate row set for self-referencing constraints.
+            parent_rows = &child_rows;
+        } else {
+            StoredRows stored_parent_rows;
+            if (!scan_rows(parent_schema->name, &stored_parent_rows, error)) {
+                return false;
+            }
+            scanned_parent_rows.reserve(stored_parent_rows.size());
+            for (const auto& stored : stored_parent_rows) {
+                scanned_parent_rows.push_back(stored.second);
+            }
+        }
+
+        for (const auto& child_row : child_rows) {
+            if (!TupleExists(child_schema, foreign_key.columns, child_row,
+                             *parent_schema, foreign_key.referenced_columns,
+                             *parent_rows)) {
+                SetError(error, "FOREIGN KEY constraint violation on table '" +
+                                child_schema.name + "': referenced row does not exist in table '" +
+                                parent_schema->name + "'");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+template <typename ScanRows>
+bool ValidateIncomingForeignKeys(const TableSchema& parent_schema,
+                                 const ValueRows& parent_rows,
+                                 const Catalog& catalog,
+                                 ScanRows&& scan_rows,
+                                 std::string* error) {
+    for (const auto& child_table_name : catalog.TableNames()) {
+        const TableSchema* child_schema = catalog.GetTable(child_table_name);
+        if (child_schema == nullptr) continue;
+
+        for (const auto& foreign_key : child_schema->foreign_key_constraints) {
+            if (NormalizeIdentifier(foreign_key.referenced_table) !=
+                NormalizeIdentifier(parent_schema.name)) {
+                continue;
+            }
+
+            ValueRows scanned_child_rows;
+            const ValueRows* child_rows = &scanned_child_rows;
+            if (NormalizeIdentifier(child_schema->name) ==
+                NormalizeIdentifier(parent_schema.name)) {
+                // A self-reference must be checked against the same candidate set.
+                child_rows = &parent_rows;
+            } else {
+                StoredRows stored_child_rows;
+                if (!scan_rows(child_schema->name, &stored_child_rows, error)) {
+                    return false;
+                }
+                scanned_child_rows.reserve(stored_child_rows.size());
+                for (const auto& stored : stored_child_rows) {
+                    scanned_child_rows.push_back(stored.second);
+                }
+            }
+
+            for (const auto& child_row : *child_rows) {
+                if (!TupleExists(*child_schema, foreign_key.columns, child_row,
+                                 parent_schema, foreign_key.referenced_columns,
+                                 parent_rows)) {
+                    SetError(error, "FOREIGN KEY RESTRICT violation: table '" +
+                                    parent_schema.name + "' has rows referenced by table '" +
+                                    child_schema->name + "'");
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 bool MatchesCondition(
     const sql::Condition& condition,
     const TableSchema& schema,
@@ -298,6 +431,20 @@ bool SqlExecutor::ExecuteInsert(
     RID* inserted_rid,
     std::string* error
 ) {
+    auto scan_table_rows = [this](
+        const std::string& table_name,
+        StoredRows* rows,
+        std::string* scan_error
+    ) -> bool {
+        const auto it = tables_.find(NormalizeIdentifier(table_name));
+        if (it == tables_.end() || it->second.record_table == nullptr) {
+            SetError(scan_error, "table '" + table_name +
+                                "' has no runtime storage managed by this SQL executor");
+            return false;
+        }
+        return it->second.record_table->Scan(rows, scan_error);
+    };
+
     try {
         Validate(sql::Statement{statement}, catalog_);
     } catch (const std::exception& exception) {
@@ -329,7 +476,10 @@ bool SqlExecutor::ExecuteInsert(
     rows.reserve(stored_rows.size() + 1);
     for (const auto& stored : stored_rows) rows.push_back(stored.second);
     rows.push_back(statement.values);
-    if (!ValidateKeyConstraints(*schema, rows, error)) return false;
+    if (!ValidateKeyConstraints(*schema, rows, error) ||
+        !ValidateOutgoingForeignKeys(*schema, rows, catalog_, scan_table_rows, error)) {
+        return false;
+    }
 
     RID new_rid;
 
@@ -444,6 +594,20 @@ bool SqlExecutor::ExecuteUpdate(
     const sql::UpdateStatement& statement,
     std::string* error
 ) {
+    auto scan_table_rows = [this](
+        const std::string& table_name,
+        StoredRows* rows,
+        std::string* scan_error
+    ) -> bool {
+        const auto it = tables_.find(NormalizeIdentifier(table_name));
+        if (it == tables_.end() || it->second.record_table == nullptr) {
+            SetError(scan_error, "table '" + table_name +
+                                "' has no runtime storage managed by this SQL executor");
+            return false;
+        }
+        return it->second.record_table->Scan(rows, scan_error);
+    };
+
     try {
         Validate(sql::Statement{statement}, catalog_);
     } catch (const std::exception& exception) {
@@ -510,7 +674,13 @@ bool SqlExecutor::ExecuteUpdate(
             resulting_rows.push_back(std::move(updated_row));
         }
 
-        if (!ValidateKeyConstraints(*schema, resulting_rows, error)) return false;
+        if (!ValidateKeyConstraints(*schema, resulting_rows, error) ||
+            !ValidateOutgoingForeignKeys(*schema, resulting_rows, catalog_,
+                                         scan_table_rows, error) ||
+            !ValidateIncomingForeignKeys(*schema, resulting_rows, catalog_,
+                                         scan_table_rows, error)) {
+            return false;
+        }
 
         for (const auto& update : updates) {
             if (!table_it->second.record_table->Update(update.first, update.second, error)) {
@@ -530,6 +700,20 @@ bool SqlExecutor::ExecuteDelete(
     const sql::DeleteStatement& statement,
     std::string* error
 ) {
+    auto scan_table_rows = [this](
+        const std::string& table_name,
+        StoredRows* rows,
+        std::string* scan_error
+    ) -> bool {
+        const auto it = tables_.find(NormalizeIdentifier(table_name));
+        if (it == tables_.end() || it->second.record_table == nullptr) {
+            SetError(scan_error, "table '" + table_name +
+                                "' has no runtime storage managed by this SQL executor");
+            return false;
+        }
+        return it->second.record_table->Scan(rows, scan_error);
+    };
+
     try {
         Validate(sql::Statement{statement}, catalog_);
     } catch (const std::exception& exception) {
@@ -564,10 +748,12 @@ bool SqlExecutor::ExecuteDelete(
     }
 
     try {
-        // Collect matching RIDs before deleting. This keeps the scan result
-        // stable while records are removed from their pages.
+        // Build the complete post-delete row set first. Referential checks
+        // run against this candidate state before any record is removed.
         std::vector<RID> matching_rids;
         matching_rids.reserve(stored_rows.size());
+        ValueRows resulting_rows;
+        resulting_rows.reserve(stored_rows.size());
 
         for (const auto& stored : stored_rows) {
             const RID& rid = stored.first;
@@ -576,7 +762,16 @@ bool SqlExecutor::ExecuteDelete(
             if (!statement.where.has_value() ||
                 MatchesCondition(*statement.where, *schema, row)) {
                 matching_rids.push_back(rid);
+            } else {
+                resulting_rows.push_back(row);
             }
+        }
+
+        if (!ValidateOutgoingForeignKeys(*schema, resulting_rows, catalog_,
+                                         scan_table_rows, error) ||
+            !ValidateIncomingForeignKeys(*schema, resulting_rows, catalog_,
+                                         scan_table_rows, error)) {
+            return false;
         }
 
         for (const RID& rid : matching_rids) {
