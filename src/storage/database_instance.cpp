@@ -5,9 +5,10 @@ namespace ocera {
 
 DatabaseInstance::DatabaseInstance(
     const std::string& db_file,
-    std::size_t pool_size
+    std::size_t pool_size,
+    DatabaseOpenMode open_mode
 )
-    : disk_manager_(db_file),
+    : disk_manager_(db_file, open_mode),
       free_space_manager_(disk_manager_),
       database_header_(disk_manager_),
       buffer_pool_manager_(
