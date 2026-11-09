@@ -1,32 +1,31 @@
 # OCERA — API Contracts Between Modules
 
-This document records the public interfaces currently implemented in OCERA and identifies planned modules whose APIs are not yet implemented.
+This document describes the public interfaces present on `feature/indexing-sql` and separates implemented functionality from proposals and missing integration work.
 
-**Rule:** Keep this document synchronized with the actual source code. Do not describe a planned interface as implemented or an implementation detail as a team-approved architectural decision.
+**Source of truth:** the headers, implementations, CMake configuration, and tests in the repository. A proposal in this document is not an implemented API or an approved architectural decision.
 
-## 1. Shared Types and Constants
+## 1. Shared types and constants
 
-Headers: `src/common/config.h`, `src/common/page.h`
+Headers: `src/common/config.h`, `src/common/page.h`, `src/common/rid.h`
 
-| Symbol | Type / Value | Description |
-|---|---|---|
-| `PAGE_SIZE` | `std::size_t`, `4096` | Page size in bytes |
-| `BITMAP_PAGE_ID` | `std::int32_t`, `0` | Reserved free-space bitmap page |
-| `HEADER_PAGE_ID` | `std::int32_t`, `1` | Reserved database header page |
-| `page_id_t` | `int32_t` | Page identifier |
-| `INVALID_PAGE_ID` | `page_id_t`, `-1` | Invalid page identifier |
-| `Page` | Structure containing `char data[PAGE_SIZE]` | Fixed-size page buffer |
+| Symbol | Current definition / contract |
+|---|---|
+| `PAGE_SIZE` | `std::size_t`, 4096 bytes |
+| `BITMAP_PAGE_ID` | `std::int32_t`, 0; reserved free-space bitmap page |
+| `HEADER_PAGE_ID` | `std::int32_t`, 1; reserved database header page |
+| `page_id_t` | `std::int32_t` |
+| `INVALID_PAGE_ID` | `page_id_t`, -1 |
+| `Page` | Fixed-size page buffer containing `char data[PAGE_SIZE]` |
+| `RID` | `{ page_id_t page_id; std::uint32_t slot_num; std::uint32_t generation; }` |
+| `INVALID_TXN_ID` | `txn_id_t`, 0 |
 
-Header: `src/txn/txn_types.h`
+`RID` equality compares all three fields. The generation distinguishes a newly inserted record from an older record that occupied the same slot.
 
-| Symbol | Type / Value | Description |
-|---|---|---|
-| `txn_id_t` | `std::uint64_t` | Transaction identifier |
-| `INVALID_TXN_ID` | `txn_id_t`, `0` | Invalid transaction identifier |
-| `ResourceId` | Alias for `page_id_t` | Resource identifier used by the lock manager |
-| `LockMode` | `enum class { Shared, Exclusive }` | Lock modes |
+Transaction types are declared in `src/txn/txn_types.h`:
 
-Transaction IDs start at `1` and increase as transactions are created. The current deadlock victim policy treats the highest transaction ID as the youngest transaction.
+- `txn_id_t` is `std::uint64_t`.
+- `ResourceId` aliases `page_id_t`.
+- `LockMode` has `Shared` and `Exclusive` values.
 
 ## 2. Storage APIs
 
@@ -34,374 +33,291 @@ Transaction IDs start at `1` and increase as transactions are created. The curre
 
 Header: `src/storage/disk_manager.h`
 
-| API | Contract |
-|---|---|
-| `explicit DiskManager(const std::string& db_file)` | Opens or creates the database file. |
-| `~DiskManager()` | Releases resources owned by the manager. |
-| `void ReadPage(page_id_t page_id, char* page_data)` | Reads `PAGE_SIZE` bytes into the supplied buffer. Unwritten pages are returned as zero-filled buffers. |
-| `void WritePage(page_id_t page_id, const char* page_data)` | Writes `PAGE_SIZE` bytes and grows the file when necessary. |
-| `page_id_t GetNumPages() const` | Returns the number of pages currently backed by the file. |
-
-**Notes:**
-- `DiskManager` is non-copyable.
-- Callers must provide buffers large enough for `PAGE_SIZE` bytes.
-- The implementation uses file I/O and a mutex to protect database-file operations.
-- Verify the implementation before documenting exact exception behavior.
-
-### 2.2 FreeSpaceManager
-
-Header: `src/storage/free_space_manager.h`
-
-| API | Contract |
-|---|---|
-| `explicit FreeSpaceManager(DiskManager& disk_manager)` | Initializes the free-space manager using the supplied disk manager. |
-| `page_id_t AllocatePage()` | Allocates a free page and returns its ID. Throws `std::runtime_error` when the bitmap is full. |
-| `void DeallocatePage(page_id_t page_id)` | Marks a page as free for future reuse. |
-| `bool IsAllocated(page_id_t page_id) const` | Reports whether a page is marked as allocated. |
-
-**Current design and limitations:**
-- Page `0` stores the bitmap.
-- Page `1` is reserved for the database header.
-- A single page-sized bitmap can represent at most `PAGE_SIZE * 8` page IDs.
-- Invalid and out-of-range page ID validation should be reviewed in the implementation.
-- `FreeSpaceManager` manages page allocation; a separate `PageManager` API is not currently documented as implemented.
-
-### 2.3 DatabaseHeader
-
-Header: `src/storage/database_header.h`
-
-| API / Symbol | Contract |
-|---|---|
-| `static constexpr char kMagic[4] = {'M', 'D', 'B', '1'}` | Identifies the current database file format. |
-| `static constexpr std::uint32_t kCurrentVersion = 1` | Current file-format version. |
-| `explicit DatabaseHeader(DiskManager& disk_manager)` | Initializes a new header or loads and validates an existing header. |
-| `std::uint32_t GetVersion() const` | Returns the stored format version. |
-| `std::uint32_t GetPageSize() const` | Returns the stored page size. |
-| `page_id_t GetCatalogRootPageId() const` | Returns the catalog root page ID. |
-
-**Notes:**
-- Header fields are serialized at fixed offsets instead of writing a raw C++ structure.
-- Construct `FreeSpaceManager` before `DatabaseHeader` so the reserved pages are initialized consistently.
-- The header stores format metadata; it does not provide crash recovery by itself.
-
-## 3. Transaction and Concurrency APIs
-
-### 3.1 LockManager
-
-Header: `src/txn/lock_manager.h`
-
-| API | Contract |
-|---|---|
-| `bool LockShared(txn_id_t txn_id, ResourceId resource)` | Requests a shared lock. Waits when blocked and returns `false` if the transaction is aborted while waiting. |
-| `bool LockExclusive(txn_id_t txn_id, ResourceId resource)` | Requests an exclusive lock. Waits when blocked and returns `false` if the transaction is aborted while waiting. |
-| `void ReleaseAllLocks(txn_id_t txn_id)` | Removes pending requests, releases held locks, and wakes waiting transactions. |
-| `void AbortTransaction(txn_id_t txn_id)` | Marks a transaction as aborted for lock-request purposes and wakes affected waiters. |
-| `std::vector<std::pair<txn_id_t, txn_id_t>> GetWaitForEdges() const` | Returns wait-for edges represented as `(waiter, holder)` pairs. |
-| `bool HoldsLock(txn_id_t txn_id, ResourceId resource, LockMode mode) const` | Checks whether the transaction holds the requested lock mode. |
-| `std::size_t NumLocksHeld(txn_id_t txn_id) const` | Returns the number of resources for which the transaction holds locks. |
-
-**Current behavior:**
-- A mutex protects the lock table.
-- Requests are queued per resource.
-- Waiting requests are served in FIFO order.
-- Lock upgrades receive priority in the waiting queue.
-- Re-requesting a lock already held, or requesting a weaker mode, returns `true`.
-- An aborted transaction's lock requests fail until its locks and pending requests are cleaned up.
-- `ResourceId` currently aliases `page_id_t`, so resources are identified at page level.
-
-Page-level locking and Strict Two-Phase Locking are implemented design choices whose formal team approval must be recorded separately.
-
-### 3.2 TransactionManager
-
-Header: `src/txn/transaction_manager.h`
-
-Transaction states:
-
-`TransactionState::Active`, `TransactionState::Committed`, and `TransactionState::Aborted`.
-
-| API | Contract |
-|---|---|
-| `explicit TransactionManager(LockManager& lock_manager)` | Creates a transaction manager using the supplied lock manager. |
-| `txn_id_t Begin()` | Creates a new active transaction with a unique increasing ID. |
-| `bool Commit(txn_id_t txn_id)` | Commits an active transaction and releases its locks. Returns `false` for an unknown or already-finished transaction. |
-| `bool Abort(txn_id_t txn_id)` | Aborts an active transaction and releases its locks. Returns `false` for an unknown or already-finished transaction. |
-| `bool Lock(txn_id_t txn_id, ResourceId resource, LockMode mode)` | Acquires a lock for an active transaction. Returns `false` if the transaction is inactive or the lock request fails. |
-| `bool GetState(txn_id_t txn_id, TransactionState* state) const` | Returns `false` for an unknown transaction; otherwise writes its state and returns `true`. |
-
-**Notes:**
-- The caller of `GetState()` must supply a valid, non-null pointer.
-- Transactions cannot acquire new locks after they finish.
-- The transaction's worker thread should perform its own `Commit()` or `Abort()` cleanup after a deadlock victim's lock request fails.
-- `Abort()` currently changes transaction state and releases locks. It does not undo modified database pages.
-- Data rollback requires an implemented undo/recovery mechanism.
-
-### 3.3 DeadlockDetector
-
-Header: `src/txn/deadlock_detector.h`
-
-| API | Contract |
-|---|---|
-| `using Edge = std::pair<txn_id_t, txn_id_t>` | Represents a wait-for edge `(waiter, holder)`. |
-| `static std::vector<txn_id_t> FindCycle(const std::vector<Edge>& edges)` | Returns one detected cycle or an empty vector if no cycle exists. |
-| `static txn_id_t ChooseVictim(const std::vector<txn_id_t>& cycle)` | Selects the highest transaction ID. Returns `INVALID_TXN_ID` for an empty cycle. |
-| `std::size_t DetectAndResolve()` | Detects deadlocks and marks one victim per detected cycle. Returns the number of victims selected during the pass. |
-| `void Start(std::chrono::milliseconds interval)` | Starts periodic background deadlock detection. |
-| `void Stop()` | Stops and joins the detector thread; safe to call repeatedly. |
-| `std::size_t DeadlocksResolved() const` | Returns the atomic count of victims selected by the detector. |
-
-**Current behavior:**
-- Deadlocks are detected using cycles in the wait-for graph.
-- The highest transaction ID in a cycle is selected as the victim.
-- The detector marks the victim through `LockManager::AbortTransaction()`.
-- The affected transaction's worker is responsible for calling `TransactionManager::Abort()` and releasing its locks.
-
-The victim-selection policy and transaction cleanup responsibilities should be recorded as confirmed architectural decisions only after explicit team agreement.
-
-## 4. Planned Modules
-
-The following modules are planned but do not have implemented public APIs in the reviewed source snapshot.
-
-| Module | Responsible teammate | Planned responsibility |
-|---|---|---|
-| Buffer Pool Manager and LRU replacement | Dhruv | Page caching, pin/unpin operations, dirty-page tracking, eviction, and integration with disk storage |
-| B+Tree indexing | Ishika | Index page layout, search, insertion, deletion, and integration with storage |
-| SQL parser and query executor | Ishika | SQL parsing, query execution, and integration with the catalog and indexes |
-| WAL, checkpointing, and crash recovery | Ishika | Logging, durability, recovery, and the future undo/redo mechanism |
-
-These statuses must be updated when the corresponding code is implemented and integrated.
-
-Final interfaces should be agreed upon by the relevant module owners before dependent modules are built against them.
-
-## 5. Build Targets
-
-The reviewed CMake configuration defines these executable targets:
-
-- `ocera`
-- `test_storage`
-- `test_header`
-- `test_lock_manager`
-- `test_transaction_manager`
-- `test_deadlock_detector`
-- `demo_concurrency`
-
-It also defines the `ocera_storage` and `ocera_txn` libraries.
-
-The reviewed CMake configuration does not register these executables with CTest through `add_test()`.
-
-## 6. API Change Procedure
-
-When changing a public interface:
-
-1. Update the header and implementation.
-2. Update the corresponding tests.
-3. Update this document.
-4. Notify owners of dependent modules.
-5. Verify the relevant build targets and tests.
-6. Do not document planned functionality as implemented until it exists.
-
-## Change Log
-
-| Date | Change | Status |
-|---|---|---|
-| 2026-10-14 | Separated implemented interfaces from planned modules and documented current limitations | Review draft; team approval pending |
-**Status:** existing storage APIs below are verified from source. Higher-layer APIs are **proposals for team approval**, not implemented code.
-
-The purpose of this document is to let teammates implement modules independently without inventing incompatible function names or data formats. If an approved signature changes, update this file in the same PR.
-
-## 1. Shared types and constants — existing
-
-Source: `src/common/config.h`, `src/common/page.h`.
-
-- Namespace: `ocera`
-- `constexpr std::size_t PAGE_SIZE = 4096`
-- `constexpr std::int32_t BITMAP_PAGE_ID = 0`
-- `constexpr std::int32_t HEADER_PAGE_ID = 1`
-- `using page_id_t = std::int32_t`
-- `constexpr page_id_t INVALID_PAGE_ID = -1`
-- `struct Page { char data[PAGE_SIZE]; ... }`; the constructor zero-initializes the byte array.
-
-A `Page` is raw page bytes only. Do not put pin counts, dirty flags or LRU metadata inside the persisted page bytes; those belong in Buffer Pool frame metadata.
-
-## 2. Storage layer — existing APIs
-
-Sources: `src/storage/disk_manager.h`, `free_space_manager.h`, `database_header.h`.
-
-### DiskManager
-
 ```cpp
 explicit DiskManager(const std::string& db_file);
 ~DiskManager();
+
 void ReadPage(page_id_t page_id, char* page_data);
 void WritePage(page_id_t page_id, const char* page_data);
 page_id_t GetNumPages() const;
 ```
 
-- `ReadPage` fills exactly `PAGE_SIZE` bytes; an unwritten page reads as zeros.
-- `WritePage` writes one fixed-size page and can grow the file.
-- A DiskManager instance is non-copyable and protects file I/O with a mutex.
-- Caller must supply a valid non-null buffer of at least `PAGE_SIZE` bytes. Invalid page IDs should not be passed.
+- Opens or creates the database file.
+- Reads and writes one `PAGE_SIZE` page.
+- Unwritten pages are read as zero-filled buffers.
+- The implementation protects file operations with a mutex.
+- The manager is non-copyable.
 
-### FreeSpaceManager
+### 2.2 FreeSpaceManager
+
+Header: `src/storage/free_space_manager.h`
 
 ```cpp
 explicit FreeSpaceManager(DiskManager& disk_manager);
+
 page_id_t AllocatePage();
 void DeallocatePage(page_id_t page_id);
 bool IsAllocated(page_id_t page_id) const;
 ```
 
-- Page 0 is the bitmap and page 1 is the database header; these are reserved.
-- `AllocatePage` throws `std::runtime_error` if the bitmap is full.
-- Current single-bitmap capacity: 32,768 page IDs (128 MiB at 4 KiB/page); bitmap chaining is future work.
+- Page 0 stores the allocation bitmap; page 1 is reserved for the database header.
+- A single page-sized bitmap represents at most `PAGE_SIZE * 8` page IDs.
+- `AllocatePage()` throws `std::runtime_error` when the bitmap is full.
 - Callers must not deallocate reserved pages.
 
-### DatabaseHeader
+### 2.3 DatabaseHeader
+
+Header: `src/storage/database_header.h`
+
+Current format constants:
+
+```cpp
+static constexpr char kMagic[4] = {'M', 'D', 'B', '1'};
+static constexpr std::uint32_t kCurrentVersion = 1;
+```
+
+Public interface:
 
 ```cpp
 explicit DatabaseHeader(DiskManager& disk_manager);
+
 std::uint32_t GetVersion() const;
 std::uint32_t GetPageSize() const;
 page_id_t GetCatalogRootPageId() const;
 ```
 
-- Lives at page ID 1; magic is currently `MDB1`; format version is 1.
-- Header fields are serialized at explicit offsets, not by writing a raw C++ struct.
-- The free-space manager must reserve the header page before it could be allocated to another caller.
-- Catalog root page ID is metadata; the Catalog implementation itself is not yet present.
+Header fields are serialized at fixed offsets rather than by writing a raw C++ structure. The header stores file metadata; it does not implement crash recovery.
 
-## 3. Buffer Pool Manager — implemented API
+### 2.4 BufferPoolManager
 
-**Owner:** Dhruv Prakash
-
-**Purpose:** Cache database pages in memory, manage pin counts and dirty state, and use LRU replacement while keeping runtime metadata separate from persisted page bytes.
-
-### API
+Header: `src/storage/buffer_pool_manager.h`
 
 ```cpp
-class BufferPoolManager {
-public:
-    BufferPoolManager(std::size_t pool_size,
-                      DiskManager& disk_manager,
-                      FreeSpaceManager& free_space_manager);
+BufferPoolManager(std::size_t pool_size,
+                  DiskManager& disk_manager,
+                  FreeSpaceManager& free_space_manager);
 
-    Page* FetchPage(page_id_t page_id);
-    bool UnpinPage(page_id_t page_id, bool is_dirty);
-    bool FlushPage(page_id_t page_id);
-    void FlushAllPages();
-    Page* NewPage(page_id_t* page_id);
-    bool DeletePage(page_id_t page_id);
+Page* FetchPage(page_id_t page_id);
+bool UnpinPage(page_id_t page_id, bool is_dirty);
+bool FlushPage(page_id_t page_id);
+void FlushAllPages();
+Page* NewPage(page_id_t* page_id);
+bool DeletePage(page_id_t page_id);
+```
+
+**Lifetime and pinning contract**
+
+- `DiskManager` and `FreeSpaceManager` must outlive the buffer pool.
+- Successful `FetchPage()` and `NewPage()` calls return a pinned page.
+- The caller must call `UnpinPage()` exactly once for every successful fetch or allocation.
+- A `Page*` may be accessed only while its page remains pinned. Do not use the pointer after unpinning.
+- `UnpinPage(id, true)` marks the page dirty. Unpinning with `false` does not clear an existing dirty flag.
+- Unpinning an unknown page or a page with a zero pin count returns `false`.
+
+**Replacement, flushing, and concurrency**
+
+- LRU replacement is implemented; pinned frames cannot be evicted.
+- Pinned pages cannot be deleted.
+- Dirty pages are written during eviction, `FlushPage()`, or `FlushAllPages()`.
+- A dirty flag is cleared only after the corresponding write succeeds.
+- Flush operations may write pinned pages. Callers must prevent concurrent changes to page bytes while a page is being flushed.
+- The buffer-pool mutex protects internal metadata, not direct access to `Page::data`.
+- Higher layers must coordinate concurrent page-content access.
+- The buffer pool does not automatically flush all pages during destruction; explicitly flush when required.
+- WAL flush ordering is not implemented. Do not infer crash consistency from buffer-pool flushing.
+
+## 3. Record and table storage
+
+### 3.1 RecordPage
+
+Header: `src/record/record_page.h`
+
+`RecordPage` stores opaque record payloads in one page. It does not encode SQL values or know a table schema.
+
+```cpp
+static bool Init(Page* page);
+static bool IsValid(const Page* page);
+
+static bool Insert(Page* page, page_id_t page_id,
+                   const std::vector<std::uint8_t>& record, RID* rid);
+static bool Get(const Page* page, page_id_t page_id, const RID& rid,
+                std::vector<std::uint8_t>* record);
+static bool Update(Page* page, page_id_t page_id, const RID& rid,
+                   const std::vector<std::uint8_t>& record);
+static bool Delete(Page* page, page_id_t page_id, const RID& rid);
+
+static bool HasSpace(const Page* page, std::size_t record_size);
+static bool Compact(Page* page);
+
+static page_id_t GetNextPageId(const Page* page);
+static bool SetNextPageId(Page* page, page_id_t next_page_id);
+```
+
+Current implementation characteristics:
+
+- Page size is `PAGE_SIZE` (4096 bytes).
+- The page contains a header, a slot directory, and packed record payloads.
+- Slot identifiers are paired with generation numbers in `RID`.
+- Deleted slots may be reused with a new generation; exhausted generation values are retired rather than wrapped.
+- Compaction relocates payload bytes while preserving slot identity.
+- An update that cannot fit leaves the existing record unchanged.
+- Record payloads must be non-empty and do not span pages.
+- `HasSpace()` takes payload size; slot-directory overhead is accounted for internally when a new slot is needed.
+
+The byte layout is an implementation format in `record_page.cpp`; do not treat it as a separately approved persistent-format decision without team review.
+
+### 3.2 TableHeap
+
+Header: `src/record/table_heap.h`
+
+```cpp
+static bool Create(BufferPoolManager& bpm, page_id_t* first_page_id);
+
+TableHeap(BufferPoolManager& bpm, page_id_t first_page_id);
+
+bool Insert(const std::vector<std::uint8_t>& record, RID* rid);
+bool Get(const RID& rid, std::vector<std::uint8_t>* record);
+bool Update(const RID& rid, const std::vector<std::uint8_t>& record);
+bool Delete(const RID& rid);
+
+page_id_t GetFirstPageId() const;
+```
+
+- `Create()` allocates and initializes the first record page.
+- The constructor opens an existing heap from its first page ID.
+- The heap traverses linked record pages and allocates another page when needed.
+- The caller must retain the first page ID to reopen the heap.
+- The implementation uses BufferPoolManager and RecordPage; callers must obey the buffer-pool pin/unpin contract.
+- The current implementation is not transaction-integrated and does not provide page-level latching or concurrent table operations.
+- A successful explicit buffer-pool flush followed by reopening was exercised by the TableHeap test. This is not a claim of crash-safe persistence or WAL recovery.
+
+## 4. Catalog and schema validation
+
+Sources: `src/catalog/catalog.h`, `src/catalog/validator.h`
+
+### 4.1 Schema types
+
+```cpp
+struct ColumnSchema {
+    std::string name;
+    sql::ColumnType type = sql::ColumnType::INT;
+};
+
+struct TableSchema {
+    std::string name;
+    std::vector<ColumnSchema> columns;
+
+    int ColumnIndex(const std::string& column_name) const;
 };
 ```
 
-### Object lifetime
+`ColumnIndex()` returns a zero-based column index or `-1` if the column is absent. Identifier normalization is ASCII case-insensitive.
 
-- `DiskManager` and `FreeSpaceManager` must outlive the `BufferPoolManager`.
-- The Buffer Pool stores references to both dependencies.
-- The Buffer Pool does not automatically flush pages during destruction. Explicit flushing is required when desired.
-
-### Pin/unpin lifecycle
-
-- Every successful `FetchPage()` and `NewPage()` returns a pinned page.
-- The caller must call `UnpinPage()` exactly once for each successful fetch or allocation.
-- A returned `Page*` must only be accessed while its page remains pinned. After unpinning, the caller must not access the pointer.
-- `UnpinPage(id, true)` marks the page dirty.
-- A subsequent `UnpinPage(id, false)` does not clear an existing dirty flag.
-- Unpinning an unknown page or a page with a zero pin count returns `false`.
-
-### Replacement and deletion
-
-- Pinned pages cannot be evicted.
-- Pinned pages cannot be deleted.
-- Unpinned pages are eligible for LRU replacement.
-- `DeletePage()` rejects reserved, invalid, unallocated, and pinned page IDs.
-
-### Failure behavior
-
-- `FetchPage()` returns `nullptr` for invalid or unallocated page IDs, or when no frame can be obtained.
-- `NewPage()` returns `nullptr` when no frame is available. Its output page ID remains `INVALID_PAGE_ID` on failure.
-- Disk I/O errors propagate as exceptions.
-
-### Flushing and dirty pages
-
-- Dirty pages are written during eviction, `FlushPage()`, or `FlushAllPages()`.
-- A dirty flag is cleared only after its corresponding write succeeds.
-- Flush operations may write pinned pages.
-- Callers must prevent concurrent page-byte modifications while a page is being flushed.
-- WAL ordering and durability requirements must be established before crash recovery is implemented.
-
-### Thread safety and page access
-
-- The Buffer Pool mutex protects internal metadata, including the page table, pin counts, dirty flags, free-frame list, and LRU structures.
-- It does not synchronize direct modifications to `Page::data` made by callers.
-- Concurrent page-content access must be coordinated by the transaction or page-latching layer.
-- Callers must not access page bytes after unpinning.
-
-### Replacement policy
-
-- LRU replacement is implemented.
-- Only unpinned frames are eligible for replacement.
-
-### Integration contract
-
-B+Tree, Table, and other page-based modules must use Buffer Pool operations rather than bypassing the Buffer Pool for raw page I/O through `DiskManager`.
-
-## 4. Record, table and Catalog layer — proposed; Ishika owns this foundation
-
-These structures are not implemented yet. Agree the byte layout before writing pages to disk.
-
-Proposed minimum scope:
-- A stable record identifier, tentatively `RID { page_id_t page_id; std::uint32_t slot_num; }`.
-- A table-page layout that can locate records and free space.
-- A Catalog mapping table names/IDs to schema and root/page metadata.
-- A simple typed value representation and schema definition shared by parser and executor.
-
-The exact record encoding, supported types, slot layout, schema persistence and Catalog root semantics remain open. Do not serialize C++ structs directly to disk; specify field offsets/encoding.
-
-## 5. B+Tree — proposed; Ishika owns it
-
-Proposed logical operations:
-- `Insert(key, RID)`
-- `Search(key) -> optional<RID>` or a collection if duplicate keys are supported
-- `Remove(key)`
-- range scan only if time permits.
-
-Open questions: key/value types, duplicate-key policy, node page layout, root-page updates, and how index changes are logged/recovered. Start with one documented key type if generic keys create unnecessary complexity.
-
-## 6. SQL parser and execution — proposed; Ishika owns it
-
-Proposed flow:
-
-`SQL text -> parser/statement representation -> validation using Catalog -> executor -> Buffer Pool/table/index APIs`.
-
-Minimum intended statements: single-table `CREATE TABLE` if needed for setup, `INSERT`, `SELECT`, `UPDATE`, `DELETE`. WHERE support should begin with simple comparisons and be explicitly documented. Joins and advanced SQL are stretch goals.
-
-The parser should return a structured statement or a clear parse error; it should not directly read/write database pages. The executor should invoke transaction APIs and table/index APIs rather than bypassing them.
-
-Exact AST types and public function signatures should be agreed when the supported grammar is chosen.
-
-## 7. Transaction Manager — implemented; Bhavya owns it
-
-**Status:** Implemented in `feature/concurrency`; transaction manager tests passed. The interface below is verified against `src/txn/transaction_manager.h`.
+### 4.2 Catalog
 
 ```cpp
-txn_id_t Begin();
-bool Commit(txn_id_t txn_id);
-bool Abort(txn_id_t txn_id);
-bool Lock(txn_id_t txn_id, ResourceId resource, LockMode mode);
-bool GetState(txn_id_t txn_id, TransactionState* state) const;
+void Catalog::CreateTable(const sql::CreateTableStatement& stmt);
+bool Catalog::HasTable(const std::string& name) const;
+const TableSchema* Catalog::GetTable(const std::string& name) const;
+std::vector<std::string> Catalog::TableNames() const;
+std::size_t Catalog::NumTables() const;
 ```
 
-- Transaction IDs increase from 1 and are unique within the running engine.
-- `Commit()` and `Abort()` finish an active transaction and release its locks.
-- `Lock()` delegates lock acquisition to the Lock Manager and fails if the transaction is inactive or has been marked as a deadlock victim.
-- `GetState()` reports the transaction state when the ID is known.
-- `Abort()` currently releases locks and records the aborted state; it does not yet undo data changes.
+- The Catalog currently stores table definitions in memory only.
+- `CreateTable()` registers a parsed CREATE TABLE definition and throws `CatalogError` for catalog errors such as duplicate tables, no columns, or duplicate column names.
+- `GetTable()` returns `nullptr` when the table is absent.
+- Table names are returned in alphabetical order, retaining their original spelling.
+- Catalog definitions are not persisted to the database file.
 
-**Pending:** WAL/undo integration, durable rollback, and recovery testing remain future work. The proposed interface must not be presented as a substitute for the verified C++ interface.
+### 4.3 Semantic validation
 
-## 8. Lock Manager implemented; deadlock detection not yet verified — Bhavya
+Header: `src/catalog/validator.h`
 
-**Status:** Implemented in `feature/concurrency`; lock manager tests passed. The interface below is verified against `src/txn/lock_manager.h`.
+```cpp
+void Validate(const sql::Statement& stmt, const Catalog& catalog);
+```
+
+`Validate()` checks a statement against the current Catalog and throws `SemanticError` for the first semantic problem. It does not execute statements, mutate the Catalog, or access storage.
+
+The implemented validation scope includes table/column existence and type/count checks for the statement forms represented in the AST. `CREATE TABLE` registration remains the responsibility of `Catalog::CreateTable()`.
+
+## 5. SQL front end
+
+Sources: `src/sql/tokenizer.h`, `src/sql/ast.h`, `src/sql/parser.h`
+
+### 5.1 Tokenizer
+
+```cpp
+std::vector<Token> Tokenize(const std::string& sql);
+const char* TokenTypeName(TokenType type);
+```
+
+The tokenizer produces tokens and an ending `END_OF_INPUT` token. It throws `TokenizerError` for lexical errors. Keywords are case-insensitive; string literals use single quotes, with doubled single quotes representing one quote.
+
+### 5.2 AST and parser
+
+The AST defines:
+
+- `ColumnType`: `INT`, `TEXT`
+- `Value`: integer (`std::int64_t`) or string
+- `CompareOp`: `EQ`, `NE`, `LT`, `GT`, `LE`, `GE`
+- `LogicalOp`: `AND`, `OR`
+- Statement variants: `CreateTableStatement`, `InsertStatement`, `SelectStatement`, `UpdateStatement`, `DeleteStatement`
+
+Parser entry point:
+
+```cpp
+sql::Statement sql::Parse(const std::string& sql);
+```
+
+- Parses exactly one statement.
+- Throws `TokenizerError` for lexical problems and `ParseError` for grammar problems.
+- The supported grammar is a limited educational SQL subset: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, and simple comparison conditions joined by AND/OR.
+- The parser builds an AST; it does not validate table contents, execute queries, access pages, or acquire locks.
+- WHERE conditions are represented as a flat ordered list of comparisons and connectors. Precedence/parentheses semantics must be settled by the executor contract; do not assume the parser has encoded AND-before-OR precedence.
+- There is no SQL execution engine in the current source snapshot.
+
+## 6. B+Tree index
+
+Header: `src/index/bplus_tree.h`
+
+```cpp
+using Key = std::int64_t;
+
+explicit BPlusTree(int max_keys = 4);
+bool Insert(Key key, const RID& rid);
+bool Search(Key key, RID* rid) const;
+std::vector<std::pair<Key, RID>> RangeScan(Key low, Key high) const;
+
+std::size_t Size() const;
+bool Empty() const;
+int Height() const;
+bool CheckInvariants(std::string* error = nullptr) const;
+```
+
+- This is an in-memory B+Tree using C++ nodes, not database pages.
+- Keys are `std::int64_t`; values are `RID`.
+- Duplicate keys are rejected by `Insert()`.
+- Search and inclusive range scan are implemented.
+- `Remove()`, persistence, Buffer Pool integration, and thread safety are not implemented.
+- The key policy and current in-memory representation should not be mistaken for a finalized on-disk index format.
+
+## 7. Transactions and concurrency
+
+### 7.1 Shared transaction types
+
+Header: `src/txn/txn_types.h`
+
+- `txn_id_t`: `std::uint64_t`
+- `INVALID_TXN_ID`: `0`
+- `ResourceId`: alias for `page_id_t`
+- `LockMode`: `Shared` or `Exclusive`
+
+Transaction IDs are allocated from 1 in increasing order.
+
+### 7.2 LockManager
+
+Header: `src/txn/lock_manager.h`
 
 ```cpp
 bool LockShared(txn_id_t txn_id, ResourceId resource);
@@ -409,66 +325,340 @@ bool LockExclusive(txn_id_t txn_id, ResourceId resource);
 void ReleaseAllLocks(txn_id_t txn_id);
 void AbortTransaction(txn_id_t txn_id);
 std::vector<std::pair<txn_id_t, txn_id_t>> GetWaitForEdges() const;
+bool HoldsLock(txn_id_t txn_id, ResourceId resource, LockMode mode) const;
+std::size_t NumLocksHeld(txn_id_t txn_id) const;
 ```
 
-- Locks are page-resource based in the current implementation.
+- Resources are currently page-level because `ResourceId` aliases `page_id_t`.
 - Shared locks can coexist; exclusive locks conflict with other transactions' locks.
-- Conflicting requests wait until they can be granted or the transaction is marked as a deadlock victim.
-- `ReleaseAllLocks()` releases all locks held by a transaction and wakes waiting requests.
-- `AbortTransaction()` marks a transaction as aborted for lock acquisition; the transaction's own thread must then call `Abort()`.
-- `GetWaitForEdges()` provides a snapshot of the wait-for graph for deadlock detection.
-- Strict 2PL behavior is implemented: locks are released together at transaction completion, not incrementally.
+- Conflicting requests block until granted or until the transaction is marked aborted.
+- Waiters are queued FIFO per resource; a lock upgrade receives priority.
+- Re-requesting a held lock or requesting a weaker mode succeeds.
+- `AbortTransaction()` marks a transaction as aborted for lock requests. The transaction's own worker must subsequently finish cleanup through the TransactionManager.
 
-**Important:** The Lock Manager exposes the wait-for graph, but this does not by itself mean deadlock detection and recovery are fully integrated with WAL or durable undo/redo.
+### 7.3 TransactionManager
 
-## 9. WAL and recovery — proposed; owner pending team confirmation
+Header: `src/txn/transaction_manager.h`
 
-Proposed responsibilities:
-- Append log records with a monotonically increasing log sequence number (LSN).
-- Enforce write-ahead rule: the relevant log record must reach durable storage before the corresponding dirty data page is flushed.
-- Provide commit durability and startup recovery hooks.
-- Support a documented checkpoint mechanism.
+```cpp
+explicit TransactionManager(LockManager& lock_manager);
 
-Exact interface, record format, physical/logical logging, page LSN storage, undo/redo strategy, fsync policy and checkpoint algorithm remain open. Agree these before the Buffer Pool starts flushing pages in ways that assume WAL semantics.
-
-## 10. Dependency and call direction
-
-```
-SQL Parser -> Validator/Catalog -> SQL Executor
-                                  |
-                                  v
-                         Transaction Manager
-                                  |
-                                  v
-                             Lock Manager
-
-SQL Executor / B+Tree / Table Pages
-                 |
-                 v
-          Buffer Pool Manager
-                 |
-                 v
-             DiskManager
-                 |
-                 v
-          Database file on disk
-
-Transaction Manager <-> WAL/Recovery coordination
-Buffer Pool Manager <-> WAL flush-order coordination
-Catalog / B+Tree -> page IDs and page bytes via Buffer Pool
+txn_id_t Begin();
+bool Commit(txn_id_t txn_id);
+bool Abort(txn_id_t txn_id);
+bool Lock(txn_id_t txn_id, ResourceId resource, LockMode mode);
+bool GetState(txn_id_t txn_id, TransactionState* state) const;
 ```
 
-Keep dependencies flowing toward lower-level services. DiskManager should not depend on SQL, B+Tree, transactions or the Buffer Pool. SQL should not call raw DiskManager I/O directly. Avoid circular header dependencies; use small shared types in `src/common/`.
+States are `Active`, `Committed`, and `Aborted`.
 
-## 11. Team approval checklist
+- `Commit()` and `Abort()` finish an active transaction and release its locks.
+- `Lock()` acquires a lock only for an active transaction.
+- `GetState()` returns `false` for an unknown transaction.
+- `Abort()` currently changes transaction state and releases locks; it does not undo modified database pages.
+- Commit does not provide WAL-backed durability in the current implementation.
 
-Before parallel implementation, agree and record:
-- [x] Buffer Pool API and pin/unpin/eviction semantics
-- [ ] Record/table-page layout and Catalog schema representation
-- [ ] B+Tree key type and duplicate-key policy
-- [ ] Supported SQL grammar and result/error representation
-- [ ] Lock granularity, blocking behavior, 2PL variant and deadlock victim policy
-- [ ] WAL record format, redo/undo scope and required flush ordering
-- [ ] Who updates which shared headers and how API changes are reviewed
+### 7.4 DeadlockDetector
 
-Until checked, the proposed contracts are guidance for discussion and mock-based tests—not authorization to silently change existing code.
+Header: `src/txn/deadlock_detector.h`
+
+```cpp
+explicit DeadlockDetector(LockManager& lock_manager);
+
+static std::vector<txn_id_t> FindCycle(const std::vector<Edge>& edges);
+static txn_id_t ChooseVictim(const std::vector<txn_id_t>& cycle);
+
+std::size_t DetectAndResolve();
+void Start(std::chrono::milliseconds interval);
+void Stop();
+std::size_t DeadlocksResolved() const;
+```
+
+- Detects cycles in the LockManager wait-for graph.
+- Chooses the highest transaction ID in a cycle as victim.
+- Marks the victim through `LockManager::AbortTransaction()`.
+- The victim's own thread must observe the failed lock request and call `TransactionManager::Abort()`.
+- Periodic background detection is supported through `Start()` and `Stop()`.
+
+## 8. WAL, checkpointing, and crash recovery
+
+**Status: not implemented in the reviewed branch snapshot.**
+
+The following are requirements for future design, not current guarantees:
+
+- Log records and LSN assignment.
+- Write-ahead ordering between durable log records and dirty-page writes.
+- Commit durability.
+- Undo/redo recovery.
+- Checkpoint format and restart behavior.
+- Page LSNs and the required flush protocol.
+
+Transaction abort currently releases locks and changes transaction state; it does not roll back page changes. Buffer-pool flushing alone must not be described as crash recovery.
+
+## 9. Schema-aware RecordSerializer
+
+**Status: implemented and tested.**
+
+Files:
+- `src/record/record_serializer.h`
+- `src/record/record_serializer.cpp`
+- `tests/test_record_serializer.cpp`
+
+`RecordSerializer` converts schema-ordered SQL values into the opaque byte payload stored by `RecordPage` and `TableHeap`, and decodes those payloads back into SQL values. It performs no page I/O.
+
+### Public interface
+
+```cpp
+class RecordSerializer {
+public:
+    static bool Encode(
+        const TableSchema& schema,
+        const std::vector<sql::Value>& values,
+        std::vector<std::uint8_t>* output,
+        std::string* error = nullptr);
+
+    static bool Decode(
+        const TableSchema& schema,
+        const std::vector<std::uint8_t>& input,
+        std::vector<sql::Value>* output,
+        std::string* error = nullptr);
+};
+```
+
+### Encoding format
+
+- `INT`: 8-byte signed two's-complement integer, little-endian.
+- `TEXT`: 4-byte unsigned length, little-endian, followed by that many raw bytes.
+- The schema supplies the field count and types. Schema metadata is not stored in each record.
+- Empty text and embedded NUL bytes are supported.
+- The current value model does not support NULL.
+- Text bytes are preserved as-is; UTF-8 validity is not checked.
+
+### Validation and failure behavior
+
+- Encoding rejects a value count that differs from the schema column count.
+- Encoding rejects values whose types do not match their schema columns.
+- Empty schemas and unsupported column types are rejected.
+- Text values exceeding the 32-bit length limit are rejected.
+- Decoding rejects truncated integer fields, truncated text lengths, and truncated text data.
+- Decoding rejects trailing bytes after the expected fields.
+- Failed encoding and decoding leave the caller's output vector unchanged.
+- An optional error string provides failure details.
+
+### Build and test
+
+CMake defines `ocera_record_serializer` and `test_record_serializer`.
+
+The serializer test covers mixed INT/TEXT round trips, integer boundary values, empty and binary-containing text, invalid types and counts, malformed records, output preservation, empty schemas, and null output pointers.
+
+The serialization format is implemented and tested. Treat changes to this format as persisted-record compatibility changes requiring explicit review.
+
+## 10. Build targets in the current CMake configuration
+
+The current `CMakeLists.txt` defines these libraries:
+
+- `ocera_storage`
+- `ocera_sql`
+- `ocera_txn`
+- `ocera_index`
+- `ocera_catalog`
+- `ocera_record`
+- `ocera_table_heap`
+- `ocera_record_serializer`
+
+It defines these executable targets:
+
+- `ocera`
+- `test_storage`
+- `test_header`
+- `test_tokenizer`
+- `test_parser`
+- `test_buffer_pool`
+- `test_lock_manager`
+- `test_transaction_manager`
+- `test_deadlock_detector`
+- `demo_concurrency`
+- `test_bplus_tree`
+- `test_catalog`
+- `test_record_page`
+- `test_table_heap`
+- `test_record_serializer`
+
+The current CMake file does not register these executables with CTest using `add_test()`. The `ocera_record_serializer` library and `test_record_serializer` executable are defined as build targets.
+
+## 11. Dependency direction and integration boundaries
+
+Intended dependency direction:
+
+```text
+SQL text
+   |
+   v
+Tokenizer -> Parser / AST -> Catalog Validator
+                              |
+                              v
+                       SQL Executor (not implemented)
+                              |
+                +-------------+-------------+
+                |             |             |
+                v             v             v
+            TableHeap      B+Tree       TransactionManager
+                |                           |
+                v                           v
+           RecordPage                    LockManager
+                |
+                v
+          BufferPoolManager
+                |
+                v
+            DiskManager
+```
+
+`RecordSerializer` converts schema-aware SQL values to and from the opaque record payload used by `TableHeap`/`RecordPage`; it is not a replacement for either storage component.
+
+Keep lower-level modules independent of SQL and transaction policy. SQL should not call raw `DiskManager` I/O. Page-based modules should use the BufferPoolManager. WAL integration must define flush ordering before crash-safety claims are made.
+
+## 12. API change procedure
+
+For a public API or persisted-format change:
+
+1. Inspect existing headers, implementations, callers, and tests.
+2. Agree on cross-module contracts with the affected owners.
+3. Update implementation and tests together.
+4. Update this document in the same change.
+5. Build and run the relevant tests; record the exact results.
+6. Distinguish implementation status from team approval and from durability guarantees.
+
+## 13. RecordTable — typed row adapter
+
+**Status:** Implemented as a thin adapter over `RecordSerializer` and `TableHeap`.
+
+`RecordTable` owns a copy of a `TableSchema` and holds a reference to an existing
+`TableHeap`. It exposes typed `Insert`, `Get`, `Update`, and `Delete` operations
+using schema-ordered `std::vector<sql::Value>` values and generation-aware `RID`s.
+
+- `Insert` encodes values with `RecordSerializer::Encode`, then calls
+  `TableHeap::Insert`.
+- `Get` retrieves opaque bytes with `TableHeap::Get`, then decodes them using
+  `RecordSerializer::Decode`.
+- `Update` encodes the replacement values before calling `TableHeap::Update`.
+- `Delete` delegates to `TableHeap::Delete`.
+
+The adapter does not own the heap, allocate pages, persist catalog metadata,
+execute SQL statements, or add transaction/WAL behavior. The caller must keep
+the referenced `TableHeap` alive for the lifetime of the `RecordTable`, and
+must supply the same compatible schema when reopening stored records.
+
+CMake targets: `ocera_record_table`, `test_record_table`.
+
+## 14. SQL Executor — initial CREATE TABLE / INSERT support
+
+**Status:** Initial implementation scope; verify with the local build and integration test before marking tested.
+
+Files:
+- `src/sql/executor.h`
+- `src/sql/executor.cpp`
+- `tests/test_sql_executor.cpp`
+
+`SqlExecutor` receives references to an existing in-memory `Catalog` and
+`BufferPoolManager`. It parses SQL text or accepts an existing AST statement.
+The initial supported statements are `CREATE TABLE` and `INSERT`.
+
+- `CREATE TABLE` validates the statement, creates and initializes a first
+  `TableHeap` page, creates a `RecordTable` using the statement schema, and
+  registers the schema with the Catalog.
+- If Catalog registration fails after page allocation, the executor removes
+  its runtime registration and attempts to deallocate the new first page.
+- `INSERT` validates table existence, value count, and value types, then
+  delegates typed insertion to `RecordTable`.
+- The optional inserted `RID` identifies the stored row.
+- `GetRowByRID()` is a storage-level row lookup helper for integration and
+  internal use; it is not SQL `SELECT`.
+
+The executor owns runtime `TableHeap` and `RecordTable` objects. The caller
+must keep the referenced Catalog and BufferPoolManager alive longer than the
+executor. The executor is not thread-safe and does not acquire transaction
+locks.
+
+The Catalog and executor's table-to-heap registry are in-memory only. Table
+pages may be flushed, but this implementation does not persist Catalog
+metadata or reopen tables automatically after process restart. WAL,
+rollback, transaction integration, `SELECT`, `UPDATE`, and `DELETE` are not
+implemented by this milestone.
+
+CMake targets: `ocera_sql_executor`, `test_sql_executor`.
+
+
+## Change log
+
+| Date | Change |
+|---|---|
+| 2026-10-14 | Existing baseline documentation separated implemented interfaces from proposals. |
+| 2026-11-07 | Consolidated duplicated sections; updated record, table, Catalog, SQL, B+Tree, transaction, and build-target status from `feature/indexing-sql`; added the schema-aware serializer as an explicitly unimplemented proposal. |
+| 2026-11-07 | Documented the implemented and tested schema-aware RecordSerializer and its encoding contract. |
+| 2026-11-08 | Documented SQL executor foreign-key enforcement and RESTRICT semantics. |
+
+
+## 11. Foreign-key metadata (feature/indexing-sql)
+
+The current SQL/Catalog implementation extends `CreateTableStatement` with:
+
+```cpp
+struct ForeignKeyConstraint {
+    std::vector<std::string> columns;
+    std::string referenced_table;
+    std::vector<std::string> referenced_columns;
+    std::size_t position = 0;
+};
+
+struct ForeignKeySchema {
+    std::vector<std::string> columns;
+    std::string referenced_table;
+    std::vector<std::string> referenced_columns;
+};
+```
+
+`CreateTableStatement::foreign_key_constraints` contains parsed declarations.
+`TableSchema::foreign_key_constraints` contains validated Catalog metadata.
+Identifiers stored in Catalog metadata use the original spelling of the registered
+table and column names.
+
+Supported declaration syntax is table-level:
+
+```sql
+FOREIGN KEY (child_col [, child_col ...])
+REFERENCES parent_table (parent_col [, parent_col ...])
+```
+
+Rules enforced during `Catalog::CreateTable()` and `Validate()`:
+
+- Both column lists must be non-empty and have equal lengths.
+- Local and referenced column names must be unique within their respective lists.
+- All local columns and referenced columns must exist.
+- The referenced table must already be registered, except that a table may
+  reference its own candidate key.
+- The referenced column tuple, in the declared order, must exactly match a
+  PRIMARY KEY or UNIQUE constraint on the referenced table.
+- Corresponding local and referenced columns must have the same `ColumnType`.
+- Invalid definitions are rejected before the new table is published.
+
+The Catalog remains in-memory only. The SQL executor enforces these relationships
+for DML operations using row scans:
+
+- `INSERT` rejects a child row unless its referenced tuple exists.
+- `UPDATE` validates the complete candidate row set before writing; both outgoing
+  references and references from other tables to the updated table are checked.
+- `DELETE` validates the complete post-delete row set before deleting; referenced
+  parent rows cannot be removed while child rows still point to them.
+- Self-referencing and composite foreign keys use the same tuple comparison rules.
+
+The initial referential action is `RESTRICT`: parent-key updates and parent-row
+deletes are rejected when they would leave a child reference unresolved. `CASCADE`
+and `SET NULL` are not supported. The current SQL value model has no NULL
+representation.
+
+Constraint validation happens before DML writes, so a foreign-key rejection does
+not partially apply the requested statement. This is statement-level prevalidation,
+not transaction rollback or crash atomicity: an underlying storage failure while
+writing multiple rows can still leave a partial operation. The executor remains
+single-threaded/non-thread-safe and is not integrated with transaction locks or WAL.

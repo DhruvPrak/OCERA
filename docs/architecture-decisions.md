@@ -101,3 +101,19 @@ This log distinguishes decisions evidenced by the current implementation from ch
 3. Include the reason and affected modules.
 4. If a decision changes, mark the old row Superseded and add the replacement; do not silently erase history.
 5. Keep implementation evidence separate from planned features.
+
+
+## 5. Foreign-key implementation proposal
+
+| ID | Date | Decision / Proposal | Reason | Affected Modules | Status |
+|---|---|---|---|---|---|
+| P-10 | 2026-11-08 | Support table-level single-column and composite foreign keys. The referenced tuple must match an existing PRIMARY KEY or UNIQUE tuple in the same order; corresponding types must match. Reject parent DELETE/key UPDATE when they would break references; do not implement CASCADE or SET NULL initially. | Reuses the existing key metadata and row-scanning execution model while keeping the initial SQL scope bounded. | SQL AST/tokenizer/parser, Catalog, validator, SQL executor | Proposed; implementation scope approved by the SQL/Catalog module owner, broader team confirmation pending |
+
+Implementation evidence: Stage 1 parses and validates declarations and stores
+Catalog metadata. Stage 2 adds SQL-executor checks for INSERT, UPDATE, and DELETE,
+including composite and self-referencing relationships with RESTRICT behavior.
+The executor prevalidates candidate row sets before applying constraint-sensitive
+writes. This is not transaction rollback or crash atomicity; storage failures during
+multi-row writes may still leave partial changes. Broader team confirmation of P-10
+remains pending, and the implementation must be tested on the integration branch
+before foreign-key integrity is described as verified project-wide.
