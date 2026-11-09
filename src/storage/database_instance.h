@@ -21,7 +21,8 @@ class DatabaseInstance {
 public:
     DatabaseInstance(
         const std::string& db_file,
-        std::size_t pool_size
+        std::size_t pool_size,
+        DatabaseOpenMode open_mode = DatabaseOpenMode::CREATE_OR_OPEN
     );
 
     // Flush dirty buffer-pool pages before closing the database.
