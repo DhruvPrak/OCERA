@@ -170,6 +170,29 @@ target_link_libraries(ocera_sql_executor
     PUBLIC
         ocera_catalog
         ocera_record_table
+        ocera_index
+)
+
+# Database lifecycle foundation.
+add_library(ocera_database_instance
+    src/storage/database_instance.cpp
+)
+
+target_include_directories(ocera_database_instance PUBLIC src)
+
+target_link_libraries(ocera_database_instance
+    PUBLIC
+        ocera_storage
+        ocera_sql_executor
+)
+
+add_executable(test_database_instance
+    tests/test_database_instance.cpp
+)
+
+target_link_libraries(test_database_instance
+    PRIVATE
+        ocera_database_instance
 )
 
 add_executable(test_sql_executor
