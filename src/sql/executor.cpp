@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "catalog/validator.h"
+#include "catalog/catalog_storage.h"
 #include "sql/parser.h"
 
 namespace ocera {
@@ -31,6 +32,11 @@ TableSchema MakeSchema(const sql::CreateTableStatement& statement) {
         schema.columns.push_back({column.name, column.type});
     }
 
+    for (const auto& key : statement.key_constraints)
+        schema.key_constraints.push_back({key.type, key.columns});
+    for (const auto& fk : statement.foreign_key_constraints)
+        schema.foreign_key_constraints.push_back(
+            {fk.columns, fk.referenced_table, fk.referenced_columns});
     return schema;
 }
 
@@ -283,9 +289,24 @@ bool MatchesCondition(
 
 }  // namespace
 
-SqlExecutor::SqlExecutor(Catalog& catalog, BufferPoolManager& bpm)
-    : catalog_(catalog),
-      bpm_(bpm) {
+SqlExecutor::SqlExecutor(Catalog& catalog, BufferPoolManager& bpm,
+                         DatabaseHeader* database_header)
+    : catalog_(catalog), bpm_(bpm), database_header_(database_header) {
+    if (database_header_ == nullptr) return;
+    std::string error;
+    if (!CatalogStorage::Load(catalog_, bpm_, *database_header_, &error))
+        throw std::runtime_error("could not load saved table list: " + error);
+    for (const auto& name : catalog_.TableNames()) {
+        const TableSchema* schema = catalog_.GetTable(name);
+        if (schema == nullptr || schema->first_page_id < 2)
+            throw std::runtime_error("saved table has an invalid starting page: " + name);
+        auto heap = std::make_unique<TableHeap>(bpm_, schema->first_page_id);
+        auto record_table = std::make_unique<RecordTable>(*schema, *heap);
+        TableRuntime runtime;
+        runtime.heap = std::move(heap);
+        runtime.record_table = std::move(record_table);
+        tables_.emplace(NormalizeIdentifier(name), std::move(runtime));
+    }
 }
 
 bool SqlExecutor::Execute(
@@ -409,7 +430,15 @@ bool SqlExecutor::ExecuteCreate(
 
         try {
             catalog_.CreateTable(statement);
+            if (!catalog_.SetTableFirstPageId(statement.table, first_page_id))
+                throw std::runtime_error("could not save table starting page");
+            if (database_header_ != nullptr) {
+                std::string save_error;
+                if (!CatalogStorage::Save(catalog_, bpm_, *database_header_, &save_error))
+                    throw std::runtime_error("could not save table list: " + save_error);
+            }
         } catch (...) {
+            catalog_.RemoveTable(statement.table);
             tables_.erase(key);
             runtime_registered = false;
             throw;

@@ -11,6 +11,7 @@
 #include "record/table_heap.h"
 #include "sql/ast.h"
 #include "storage/buffer_pool_manager.h"
+#include "storage/database_header.h"
 
 namespace ocera {
 
@@ -21,7 +22,8 @@ struct QueryResult {
 
 class SqlExecutor {
 public:
-    SqlExecutor(Catalog& catalog, BufferPoolManager& bpm);
+    SqlExecutor(Catalog& catalog, BufferPoolManager& bpm,
+                DatabaseHeader* database_header = nullptr);
 
     bool Execute(
         const std::string& sql_text,
@@ -79,6 +81,7 @@ private:
 
     Catalog& catalog_;
     BufferPoolManager& bpm_;
+    DatabaseHeader* database_header_;
     std::map<std::string, TableRuntime> tables_;
 };
 

@@ -180,6 +180,17 @@ void Catalog::CreateTable(const sql::CreateTableStatement& stmt) {
     tables_.emplace(key, std::move(schema));
 }
 
+bool Catalog::SetTableFirstPageId(const std::string& name, page_id_t page_id) {
+    auto it = tables_.find(NormalizeIdentifier(name));
+    if (it == tables_.end() || page_id < 2) return false;
+    it->second.first_page_id = page_id;
+    return true;
+}
+
+bool Catalog::RemoveTable(const std::string& name) {
+    return tables_.erase(NormalizeIdentifier(name)) != 0;
+}
+
 bool Catalog::HasTable(const std::string& name) const {
     return tables_.count(NormalizeIdentifier(name)) != 0;
 }
