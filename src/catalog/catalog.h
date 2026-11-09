@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "sql/ast.h"  // SQL schema and statement definitions
+#include "common/page.h"
 
 namespace ocera {
 
@@ -34,6 +35,7 @@ struct ForeignKeySchema {
 
 struct TableSchema {
     std::string name;
+    page_id_t first_page_id = INVALID_PAGE_ID;
     std::vector<ColumnSchema> columns;
     std::vector<KeySchema> key_constraints;
     std::vector<ForeignKeySchema> foreign_key_constraints;
@@ -51,12 +53,17 @@ struct IndexSchema {
 // Lower-cases ASCII letters; used to compare identifiers case-insensitively.
 std::string NormalizeIdentifier(const std::string& name);
 
+class CatalogStorage;
+struct CatalogStorageAccess;
+
 class Catalog {
 public:
     // Registers a table. Throws CatalogError without changing the Catalog if
     // the table already exists, has no columns, or has duplicate columns.
     void CreateTable(const sql::CreateTableStatement& stmt);
 
+    bool SetTableFirstPageId(const std::string& name, page_id_t page_id);
+    bool RemoveTable(const std::string& name);
     bool HasTable(const std::string& name) const;
     // Returned pointers remain valid for the life of the Catalog.
     const TableSchema* GetTable(const std::string& name) const;
@@ -76,6 +83,8 @@ public:
     std::size_t NumIndexes() const { return indexes_.size(); }
 
 private:
+    friend class CatalogStorage;
+    friend struct CatalogStorageAccess;
     std::map<std::string, TableSchema> tables_;   // normalized table name
     std::map<std::string, IndexSchema> indexes_; // normalized index name
 };

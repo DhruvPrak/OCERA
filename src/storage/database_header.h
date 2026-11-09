@@ -34,6 +34,7 @@ public:
     std::uint32_t GetVersion() const { return version_; }
     std::uint32_t GetPageSize() const { return page_size_; }
     page_id_t GetCatalogRootPageId() const { return catalog_root_page_id_; }
+    void SetCatalogRootPageId(page_id_t page_id);
 
 private:
     DiskManager& disk_manager_;

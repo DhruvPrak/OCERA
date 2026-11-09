@@ -37,6 +37,7 @@ int main() {
     std::cout << "=== OCERA Database Header Test ===\n\n";
     const std::string db_file = "test_header.db";
     std::remove(db_file.c_str());
+    page_id_t saved_catalog_root = INVALID_PAGE_ID;
 
     // --- A: create a new database, verify the header's default contents ---
     std::cout << "[A] Creating a new database and checking the header...\n";
@@ -48,6 +49,9 @@ int main() {
         assert(header.GetVersion() == DatabaseHeader::kCurrentVersion);
         assert(header.GetPageSize() == static_cast<std::uint32_t>(PAGE_SIZE));
         assert(header.GetCatalogRootPageId() == INVALID_PAGE_ID);
+        saved_catalog_root = free_space_manager.AllocatePage();
+        header.SetCatalogRootPageId(saved_catalog_root);
+        assert(header.GetCatalogRootPageId() == saved_catalog_root);
         std::cout << "    PASSED: version=" << header.GetVersion()
                    << ", page_size=" << header.GetPageSize()
                    << ", catalog_root=" << header.GetCatalogRootPageId() << "\n\n";
@@ -91,8 +95,8 @@ int main() {
 
         assert(header.GetVersion() == DatabaseHeader::kCurrentVersion);
         assert(header.GetPageSize() == static_cast<std::uint32_t>(PAGE_SIZE));
-        assert(header.GetCatalogRootPageId() == INVALID_PAGE_ID);
-        std::cout << "    PASSED: reopened header matches what was originally written.\n\n";
+        assert(header.GetCatalogRootPageId() == saved_catalog_root);
+        std::cout << "    PASSED: reopened header retained the saved Catalog page number.\n\n";
     }
 
     // --- E: a garbage/non-OCERA file is rejected cleanly ---

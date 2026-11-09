@@ -178,7 +178,7 @@ int main(int argc, char* argv[]) {
         );
 
         ocera::Catalog catalog;
-        ocera::SqlExecutor executor(catalog, bpm);
+        ocera::SqlExecutor executor(catalog, bpm, &database_header);
         ocera::cli::StatementReader reader;
 
         std::cout << "\n";
@@ -188,8 +188,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Database file: " << db_file << '\n';
         std::cout << "Supported SQL: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE\n";
         std::cout << "Type .exit to quit.\n";
-        std::cout << "Note: Table catalog metadata is currently "
-                     "session-only.\n\n";
+        std::cout << "Table definitions and records are saved on normal exit.\n\n";
 
         std::string line;
         bool running = true;
