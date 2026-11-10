@@ -279,7 +279,7 @@ bool HandleDatabaseCommand(
             if (std::find(names.begin(), names.end(), name) == names.end()) {
                 names.push_back(name);
                 if (!SaveDatabaseNames(names)) {
-                    std::cout << "ERROR: could not update database registry; database switch cancelled\\n";
+                    std::cout << "ERROR: could not update database registry; database switch cancelled\n";
                     return true;
                 }
             }
