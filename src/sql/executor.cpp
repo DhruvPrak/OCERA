@@ -380,6 +380,60 @@ bool SqlExecutor::Execute(
         return ExecuteDelete(*remove, error);
     }
 
+    if (std::get_if<sql::ShowTablesStatement>(&statement) != nullptr) {
+    if (query_result == nullptr) {
+        SetError(error, "SHOW TABLES requires a query result output");
+        return false;
+    }
+
+    QueryResult result;
+    result.column_names = {"Tables"};
+
+    for (const auto& table_name : catalog_.TableNames()) {
+        sql::Value value;
+        value.type = sql::Value::Type::STRING;
+        value.string_value = table_name;
+        result.rows.push_back({std::move(value)});
+    }
+
+    *query_result = std::move(result);
+    return true;
+}
+
+if (const auto* desc =
+        std::get_if<sql::DescTableStatement>(&statement)) {
+    const TableSchema* schema = catalog_.GetTable(desc->table);
+
+    if (schema == nullptr) {
+        SetError(error, "table '" + desc->table + "' does not exist");
+        return false;
+    }
+
+    if (query_result == nullptr) {
+        SetError(error, "DESC requires a query result output");
+        return false;
+    }
+
+    QueryResult result;
+    result.column_names = {"Column", "Type"};
+
+    for (const auto& column : schema->columns) {
+        sql::Value name;
+        name.type = sql::Value::Type::STRING;
+        name.string_value = column.name;
+
+        sql::Value type;
+        type.type = sql::Value::Type::STRING;
+        type.string_value =
+            column.type == sql::ColumnType::INT ? "INT" : "TEXT";
+
+        result.rows.push_back({std::move(name), std::move(type)});
+    }
+
+    *query_result = std::move(result);
+    return true;
+}
+
     SetError(error, "unsupported SQL statement");
     return false;
 }

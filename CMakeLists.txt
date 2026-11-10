@@ -24,7 +24,7 @@ add_executable(ocera src/main.cpp)
 
 target_link_libraries(ocera
     PRIVATE
-        ocera_sql_executor
+        ocera_database_instance
 )
 
 add_executable(test_storage tests/test_storage.cpp)

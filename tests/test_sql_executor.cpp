@@ -440,6 +440,47 @@ int main() {
         assert(!executor.Execute(
             "INSERT INTO fk_employee VALUES (3, 99);", nullptr, &error));
 
+            std::cout << "[29] SHOW TABLES\n";
+
+        const bool show_ok =
+            executor.Execute("SHOW TABLES;", nullptr, &error, &result);
+
+        if (!show_ok) {
+            std::cerr << "SHOW TABLES error: " << error << '\n';
+        }
+        assert(show_ok);
+
+        assert(result.column_names.size() == 1);
+        assert(result.column_names[0] == "Tables");
+        assert(!result.rows.empty());
+
+        std::cout << "[30] DESC students\n";
+
+        assert(executor.Execute(
+            "DESC students;",
+            nullptr,
+            &error,
+            &result
+        ));
+
+        assert(result.column_names.size() == 2);
+        assert(result.rows.size() == 3);
+        assert(result.rows[0][0].string_value == "id");
+        assert(result.rows[1][0].string_value == "name");
+        assert(result.rows[2][0].string_value == "age");
+
+        std::cout << "[31] DESC unknown table should fail\n";
+
+        assert(!executor.Execute(
+            "DESC unknown_table;",
+            nullptr,
+            &error,
+            &result
+        ));
+
+        assert(!error.empty());
+
+
         bpm.FlushAllPages();
     }
 

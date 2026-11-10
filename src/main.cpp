@@ -6,13 +6,8 @@
 #include <string>
 #include <vector>
 
-#include "catalog/catalog.h"
+#include "storage/database_instance.h"
 #include "cli/statement_reader.h"
-#include "sql/executor.h"
-#include "storage/buffer_pool_manager.h"
-#include "storage/database_header.h"
-#include "storage/disk_manager.h"
-#include "storage/free_space_manager.h"
 
 namespace {
 
@@ -169,16 +164,9 @@ int main(int argc, char* argv[]) {
         (argc > 1) ? argv[1] : "ocera.db";
 
     try {
-        ocera::DiskManager disk_manager(db_file);
-        ocera::FreeSpaceManager free_space_manager(disk_manager);
-        ocera::DatabaseHeader database_header(disk_manager);
+        ocera::DatabaseInstance database(db_file, 64);
+        ocera::SqlExecutor& executor = database.GetExecutor();
 
-        ocera::BufferPoolManager bpm(
-            64, disk_manager, free_space_manager
-        );
-
-        ocera::Catalog catalog;
-        ocera::SqlExecutor executor(catalog, bpm, &database_header);
         ocera::cli::StatementReader reader;
 
         std::cout << "\n";
@@ -224,7 +212,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        bpm.FlushAllPages();
+        database.Flush();
 
         std::cout << "\nOCERA closed successfully.\n";
         return 0;
