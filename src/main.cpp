@@ -276,13 +276,16 @@ bool HandleDatabaseCommand(
             auto next = std::make_unique<RuntimeDatabase>(
                 file, ocera::DatabaseOpenMode::OPEN_EXISTING);
             active->Flush();
+            if (std::find(names.begin(), names.end(), name) == names.end()) {
+                names.push_back(name);
+                if (!SaveDatabaseNames(names)) {
+                    std::cout << "ERROR: could not update database registry; database switch cancelled\\n";
+                    return true;
+                }
+            }
             active = std::move(next);
             active_name = name;
             active_file = file;
-            if (std::find(names.begin(), names.end(), name) == names.end()) {
-                names.push_back(name);
-                SaveDatabaseNames(names);
-            }
         } catch (const std::exception& e) {
             std::cout << "ERROR: " << e.what() << '\n';
             return true;
@@ -367,7 +370,7 @@ int main(int argc, char* argv[]) {
         std::cout << "====================================\n";
         std::cout << "Database: " << active_name << " (" << active_file << ")\n";
         std::cout << "Database commands: CREATE DATABASE, SHOW DATABASES, USE, DROP DATABASE\n";
-        std::cout << "Table commands: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, SHOW TABLES, DESC, DROP TABLE\n";
+        std::cout << "Table commands: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, SHOW TABLES, DESC\n";
         std::cout << "Type .exit to quit.\n\n";
 
         std::string line;
