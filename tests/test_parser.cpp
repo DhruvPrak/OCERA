@@ -337,7 +337,10 @@ int main() {
     std::cout << "[21] Other edge cases\n";
     before = g_failures;
     Check(ParseFails("INSERT INTO t VALUES (99999999999999999999)"), "integer out of range");
-    Check(ParseFails("DROP TABLE t"), "unsupported statement");
+    {
+        auto s = ParseAs<DropTableStatement>("DROP TABLE t");
+        Check(s.table == "t", "DROP TABLE parsed");
+    }
     Check(ParseFails("SELECT * FROM a, b"), "multiple tables (no joins) rejected");
     {
         auto s = ParseAs<InsertStatement>("INSERT INTO t VALUES (  'x'  )");
