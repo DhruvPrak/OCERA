@@ -206,3 +206,6 @@ add_executable(test_statement_reader
 )
 
 target_include_directories(test_statement_reader PRIVATE src)
+
+# The CLI uses DatabaseInstance so catalog metadata is persisted on clean close/reopen.
+target_link_libraries(ocera PRIVATE ocera_database_instance)

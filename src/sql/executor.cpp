@@ -288,6 +288,61 @@ SqlExecutor::SqlExecutor(Catalog& catalog, BufferPoolManager& bpm)
       bpm_(bpm) {
 }
 
+bool SqlExecutor::RestoreTables(std::string* error) {
+    ClearError(error);
+
+    std::map<std::string, TableRuntime> restored_tables;
+
+    for (const std::string& table_name : catalog_.TableNames()) {
+        const TableSchema* schema = catalog_.GetTable(table_name);
+
+        if (schema == nullptr) {
+            SetError(error, "table schema missing during runtime restoration");
+            return false;
+        }
+
+        // Legacy catalog entries have no persisted physical page ID.
+        if (schema->first_page_id == INVALID_PAGE_ID) {
+            continue;
+        }
+
+        if (schema->first_page_id < 2) {
+            SetError(error, "invalid first page ID for table '" +
+                            table_name + "'");
+            return false;
+        }
+
+        auto heap = std::make_unique<TableHeap>(
+            bpm_,
+            schema->first_page_id
+        );
+
+        auto record_table = std::make_unique<RecordTable>(
+            *schema,
+            *heap
+        );
+
+        TableRuntime runtime;
+        runtime.heap = std::move(heap);
+        runtime.record_table = std::move(record_table);
+
+        const auto inserted = restored_tables.emplace(
+            NormalizeIdentifier(table_name),
+            std::move(runtime)
+        );
+
+        if (!inserted.second) {
+            SetError(error, "duplicate runtime table registration");
+            return false;
+        }
+    }
+
+    // Publish restored runtime tables only after successful construction.
+    tables_.swap(restored_tables);
+
+    return true;
+}
+
 bool SqlExecutor::Execute(
     const std::string& sql_text,
     RID* inserted_rid,
@@ -334,6 +389,11 @@ bool SqlExecutor::Execute(
         return ExecuteCreate(*create, error);
     }
 
+    if (const auto* create_index =
+            std::get_if<sql::CreateIndexStatement>(&statement)) {
+        return ExecuteCreateIndex(*create_index, error);
+    }
+
     if (const auto* insert =
             std::get_if<sql::InsertStatement>(&statement)) {
         return ExecuteInsert(*insert, inserted_rid, error);
@@ -357,6 +417,74 @@ bool SqlExecutor::Execute(
     if (const auto* remove =
             std::get_if<sql::DeleteStatement>(&statement)) {
         return ExecuteDelete(*remove, error);
+    }
+
+    if (std::get_if<sql::ShowTablesStatement>(&statement) != nullptr) {
+        if (query_result == nullptr) {
+            SetError(error, "SHOW TABLES requires a query result output");
+            return false;
+        }
+
+        QueryResult result;
+        result.column_names.push_back("Tables");
+        for (const auto& table_name : catalog_.TableNames()) {
+            sql::Value value;
+            value.type = sql::Value::Type::STRING;
+            value.string_value = table_name;
+            result.rows.push_back({std::move(value)});
+        }
+        *query_result = std::move(result);
+        return true;
+    }
+
+    if (const auto* desc =
+            std::get_if<sql::DescTableStatement>(&statement)) {
+        const TableSchema* schema = catalog_.GetTable(desc->table);
+        if (schema == nullptr) {
+            SetError(error, "table '" + desc->table + "' does not exist");
+            return false;
+        }
+        if (query_result == nullptr) {
+            SetError(error, "DESC requires a query result output");
+            return false;
+        }
+
+        QueryResult result;
+        result.column_names = {"Column", "Type"};
+        for (const auto& column : schema->columns) {
+            sql::Value name;
+            name.type = sql::Value::Type::STRING;
+            name.string_value = column.name;
+
+            sql::Value type;
+            type.type = sql::Value::Type::STRING;
+            type.string_value = column.type == sql::ColumnType::INT ? "INT" : "TEXT";
+            result.rows.push_back({std::move(name), std::move(type)});
+        }
+        *query_result = std::move(result);
+        return true;
+    }
+
+    if (const auto* drop =
+            std::get_if<sql::DropTableStatement>(&statement)) {
+        if (!catalog_.HasTable(drop->table)) {
+            SetError(error, "table '" + drop->table + "' does not exist");
+            return false;
+        }
+
+        const std::string table_key = NormalizeIdentifier(drop->table);
+        for (auto it = indexes_.begin(); it != indexes_.end();) {
+            const IndexSchema* index = catalog_.GetIndex(it->first);
+            if (index != nullptr &&
+                NormalizeIdentifier(index->table_name) == table_key) {
+                it = indexes_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        tables_.erase(table_key);
+        catalog_.DropTable(drop->table);
+        return true;
     }
 
     SetError(error, "unsupported SQL statement");
@@ -408,7 +536,7 @@ bool SqlExecutor::ExecuteCreate(
         runtime_registered = true;
 
         try {
-            catalog_.CreateTable(statement);
+            catalog_.CreateTable(statement, first_page_id);
         } catch (...) {
             tables_.erase(key);
             runtime_registered = false;
@@ -424,6 +552,79 @@ bool SqlExecutor::ExecuteCreate(
         SetError(error, exception.what());
         return false;
     }
+}
+
+bool SqlExecutor::ExecuteCreateIndex(
+    const sql::CreateIndexStatement& statement,
+    std::string* error
+) {
+    try {
+        Validate(sql::Statement{statement}, catalog_);
+    } catch (const std::exception& exception) {
+        SetError(error, exception.what());
+        return false;
+    }
+
+    const std::string table_key = NormalizeIdentifier(statement.table);
+    const auto table_it = tables_.find(table_key);
+    if (table_it == tables_.end() || table_it->second.record_table == nullptr) {
+        SetError(error, "table '" + statement.table +
+                        "' has no runtime storage managed by this SQL executor");
+        return false;
+    }
+
+    const TableSchema* schema = catalog_.GetTable(statement.table);
+    if (schema == nullptr) {
+        SetError(error, "table schema is unavailable");
+        return false;
+    }
+
+    const int column_index = schema->ColumnIndex(statement.column);
+    if (column_index < 0) {
+        SetError(error, "index column does not exist");
+        return false;
+    }
+
+    const std::size_t index_position = static_cast<std::size_t>(column_index);
+    if (schema->columns[index_position].type != sql::ColumnType::INT) {
+        SetError(error, "B+Tree indexes currently require an INT column");
+        return false;
+    }
+
+    StoredRows rows;
+    if (!table_it->second.record_table->Scan(&rows, error)) {
+        return false;
+    }
+
+    auto index = std::make_unique<BPlusTree>();
+    for (const auto& stored : rows) {
+        if (index_position >= stored.second.size() ||
+            stored.second[index_position].type != sql::Value::Type::INTEGER) {
+            SetError(error, "stored row has an invalid indexed column value");
+            return false;
+        }
+        if (!index->Insert(stored.second[index_position].int_value, stored.first)) {
+            SetError(error, "failed to insert a row into the B+Tree index");
+            return false;
+        }
+    }
+
+    const std::string index_key = NormalizeIdentifier(statement.index_name);
+    const auto insertion = indexes_.emplace(index_key, std::move(index));
+    if (!insertion.second) {
+        SetError(error, "index runtime is already registered");
+        return false;
+    }
+
+    try {
+        catalog_.CreateIndex(statement);
+    } catch (const std::exception& exception) {
+        indexes_.erase(index_key);
+        SetError(error, exception.what());
+        return false;
+    }
+
+    return true;
 }
 
 bool SqlExecutor::ExecuteInsert(

@@ -7,6 +7,7 @@
 
 #include "catalog/catalog.h"
 #include "common/rid.h"
+#include "index/bplus_tree.h"
 #include "record/record_table.h"
 #include "record/table_heap.h"
 #include "sql/ast.h"
@@ -29,7 +30,8 @@ public:
         std::string* error = nullptr,
         QueryResult* query_result = nullptr
     );
-
+    // Rebuild runtime table objects using persisted Catalog metadata.
+    bool RestoreTables(std::string* error = nullptr);
     bool Execute(
         const sql::Statement& statement,
         RID* inserted_rid = nullptr,
@@ -50,36 +52,17 @@ private:
         std::unique_ptr<RecordTable> record_table;
     };
 
-    bool ExecuteCreate(
-        const sql::CreateTableStatement& statement,
-        std::string* error
-    );
-
-    bool ExecuteInsert(
-        const sql::InsertStatement& statement,
-        RID* inserted_rid,
-        std::string* error
-    );
-
-    bool ExecuteSelect(
-        const sql::SelectStatement& statement,
-        QueryResult* query_result,
-        std::string* error
-    );
-
-    bool ExecuteUpdate(
-        const sql::UpdateStatement& statement,
-        std::string* error
-    );
-
-    bool ExecuteDelete(
-        const sql::DeleteStatement& statement,
-        std::string* error
-    );
+    bool ExecuteCreate(const sql::CreateTableStatement& statement, std::string* error);
+    bool ExecuteCreateIndex(const sql::CreateIndexStatement& statement, std::string* error);
+    bool ExecuteInsert(const sql::InsertStatement& statement, RID* inserted_rid, std::string* error);
+    bool ExecuteSelect(const sql::SelectStatement& statement, QueryResult* query_result, std::string* error);
+    bool ExecuteUpdate(const sql::UpdateStatement& statement, std::string* error);
+    bool ExecuteDelete(const sql::DeleteStatement& statement, std::string* error);
 
     Catalog& catalog_;
     BufferPoolManager& bpm_;
     std::map<std::string, TableRuntime> tables_;
+    std::map<std::string, std::unique_ptr<BPlusTree>> indexes_;
 };
 
 }  // namespace ocera

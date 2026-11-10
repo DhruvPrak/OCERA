@@ -1,10 +1,12 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "common/page.h"
 #include "sql/ast.h"  // SQL schema and statement definitions
 
 namespace ocera {
@@ -37,6 +39,9 @@ struct TableSchema {
     std::vector<ColumnSchema> columns;
     std::vector<KeySchema> key_constraints;
     std::vector<ForeignKeySchema> foreign_key_constraints;
+    // First RecordPage of this table on disk.
+    // INVALID_PAGE_ID means no physical storage is registered.
+    page_id_t first_page_id = INVALID_PAGE_ID;
 
     // Position of the column (0-based, case-insensitive), or -1 if absent.
     int ColumnIndex(const std::string& column_name) const;
@@ -55,7 +60,11 @@ class Catalog {
 public:
     // Registers a table. Throws CatalogError without changing the Catalog if
     // the table already exists, has no columns, or has duplicate columns.
-    void CreateTable(const sql::CreateTableStatement& stmt);
+    void CreateTable(
+        const sql::CreateTableStatement& stmt,
+        page_id_t first_page_id = INVALID_PAGE_ID
+    );
+    void DropTable(const std::string& name);
 
     bool HasTable(const std::string& name) const;
     // Returned pointers remain valid for the life of the Catalog.
@@ -74,6 +83,10 @@ public:
     const IndexSchema* GetIndexForColumn(const std::string& table,
                                          const std::string& column) const;
     std::size_t NumIndexes() const { return indexes_.size(); }
+
+    // Binary catalog image used by DatabaseInstance for clean-restart persistence.
+    std::vector<std::uint8_t> Serialize() const;
+    void Deserialize(const std::vector<std::uint8_t>& bytes);
 
 private:
     std::map<std::string, TableSchema> tables_;   // normalized table name

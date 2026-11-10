@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 #include "storage/disk_manager.h"
 #include "storage/free_space_manager.h"
@@ -42,6 +43,10 @@ private:
     BufferPoolManager buffer_pool_manager_;
     Catalog catalog_;
     SqlExecutor executor_;
+
+    std::vector<page_id_t> ReadCatalogPageChain() const;
+    void LoadCatalog();
+    void SaveCatalog();
 };
 
 }  // namespace ocera
