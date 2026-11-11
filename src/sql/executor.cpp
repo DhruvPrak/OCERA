@@ -1,10 +1,14 @@
 #include "sql/executor.h"
 
+#include <algorithm>
 #include <exception>
+#include <limits>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "catalog/validator.h"
+#include "catalog/catalog_storage.h"
 #include "sql/parser.h"
 
 namespace ocera {
@@ -31,6 +35,11 @@ TableSchema MakeSchema(const sql::CreateTableStatement& statement) {
         schema.columns.push_back({column.name, column.type});
     }
 
+    for (const auto& key : statement.key_constraints)
+        schema.key_constraints.push_back({key.type, key.columns});
+    for (const auto& fk : statement.foreign_key_constraints)
+        schema.foreign_key_constraints.push_back(
+            {fk.columns, fk.referenced_table, fk.referenced_columns});
     return schema;
 }
 
@@ -283,9 +292,43 @@ bool MatchesCondition(
 
 }  // namespace
 
-SqlExecutor::SqlExecutor(Catalog& catalog, BufferPoolManager& bpm)
-    : catalog_(catalog),
-      bpm_(bpm) {
+SqlExecutor::SqlExecutor(Catalog& catalog, BufferPoolManager& bpm,
+                         DatabaseHeader* database_header)
+    : catalog_(catalog), bpm_(bpm), database_header_(database_header) {
+    if (database_header_ == nullptr) return;
+    std::string error;
+    if (!CatalogStorage::Load(catalog_, bpm_, *database_header_, &error))
+        throw std::runtime_error("could not load saved table list: " + error);
+    for (const auto& name : catalog_.TableNames()) {
+        const TableSchema* schema = catalog_.GetTable(name);
+        if (schema == nullptr || schema->first_page_id < 2)
+            throw std::runtime_error("saved table has an invalid starting page: " + name);
+        auto heap = std::make_unique<TableHeap>(bpm_, schema->first_page_id);
+        auto record_table = std::make_unique<RecordTable>(*schema, *heap);
+        TableRuntime runtime;
+        runtime.heap = std::move(heap);
+        runtime.record_table = std::move(record_table);
+        tables_.emplace(NormalizeIdentifier(name), std::move(runtime));
+    }
+
+    // CatalogStorage persists index metadata, while B+Trees are in-memory
+    // structures. Rebuild each runtime tree from its table rows on restart.
+    for (const auto& index : catalog_.Indexes()) {
+        std::unique_ptr<BPlusTree> tree;
+        std::string index_error;
+        if (!BuildIndexTree(index.table_name, index.column_name, &tree,
+                            &index_error)) {
+            throw std::runtime_error(
+                "could not rebuild index '" + index.name + "': " + index_error);
+        }
+
+        const auto insertion = indexes_.emplace(
+            NormalizeIdentifier(index.name), std::move(tree));
+        if (!insertion.second) {
+            throw std::runtime_error(
+                "duplicate runtime index registration for '" + index.name + "'");
+        }
+    }
 }
 
 bool SqlExecutor::Execute(
@@ -334,6 +377,11 @@ bool SqlExecutor::Execute(
         return ExecuteCreate(*create, error);
     }
 
+    if (const auto* create_index =
+            std::get_if<sql::CreateIndexStatement>(&statement)) {
+        return ExecuteCreateIndex(*create_index, error);
+    }
+
     if (const auto* insert =
             std::get_if<sql::InsertStatement>(&statement)) {
         return ExecuteInsert(*insert, inserted_rid, error);
@@ -359,8 +407,195 @@ bool SqlExecutor::Execute(
         return ExecuteDelete(*remove, error);
     }
 
+    if (std::get_if<sql::ShowTablesStatement>(&statement) != nullptr) {
+    if (query_result == nullptr) {
+        SetError(error, "SHOW TABLES requires a query result output");
+        return false;
+    }
+
+    QueryResult result;
+    result.column_names = {"Tables"};
+
+    for (const auto& table_name : catalog_.TableNames()) {
+        sql::Value value;
+        value.type = sql::Value::Type::STRING;
+        value.string_value = table_name;
+        result.rows.push_back({std::move(value)});
+    }
+
+    *query_result = std::move(result);
+    return true;
+}
+
+if (const auto* desc =
+        std::get_if<sql::DescTableStatement>(&statement)) {
+    const TableSchema* schema = catalog_.GetTable(desc->table);
+
+    if (schema == nullptr) {
+        SetError(error, "table '" + desc->table + "' does not exist");
+        return false;
+    }
+
+    if (query_result == nullptr) {
+        SetError(error, "DESC requires a query result output");
+        return false;
+    }
+
+    QueryResult result;
+    result.column_names = {"Column", "Type"};
+
+    for (const auto& column : schema->columns) {
+        sql::Value name;
+        name.type = sql::Value::Type::STRING;
+        name.string_value = column.name;
+
+        sql::Value type;
+        type.type = sql::Value::Type::STRING;
+        type.string_value =
+            column.type == sql::ColumnType::INT ? "INT" : "TEXT";
+
+        result.rows.push_back({std::move(name), std::move(type)});
+    }
+
+    *query_result = std::move(result);
+    return true;
+}
+
     SetError(error, "unsupported SQL statement");
     return false;
+}
+
+bool SqlExecutor::BuildIndexTree(
+    const std::string& table_name,
+    const std::string& column_name,
+    std::unique_ptr<BPlusTree>* tree,
+    std::string* error
+) {
+    if (tree == nullptr) {
+        SetError(error, "index tree output pointer is null");
+        return false;
+    }
+
+    tree->reset();
+
+    const TableSchema* schema = catalog_.GetTable(table_name);
+    if (schema == nullptr) {
+        SetError(error, "table '" + table_name + "' does not exist");
+        return false;
+    }
+
+    const int column_index = schema->ColumnIndex(column_name);
+    if (column_index < 0 ||
+        static_cast<std::size_t>(column_index) >= schema->columns.size()) {
+        SetError(error, "unknown index column '" + column_name +
+                        "' in table '" + table_name + "'");
+        return false;
+    }
+
+    if (schema->columns[static_cast<std::size_t>(column_index)].type !=
+        sql::ColumnType::INT) {
+        SetError(error, "B+Tree indexes currently support INT columns only");
+        return false;
+    }
+
+    const auto table_it = tables_.find(NormalizeIdentifier(table_name));
+    if (table_it == tables_.end() || table_it->second.record_table == nullptr) {
+        SetError(error, "table '" + table_name +
+                        "' has no runtime storage managed by this SQL executor");
+        return false;
+    }
+
+    StoredRows rows;
+    if (!table_it->second.record_table->Scan(&rows, error)) {
+        return false;
+    }
+
+    auto built_tree = std::make_unique<BPlusTree>();
+    for (const auto& stored : rows) {
+        const RID& rid = stored.first;
+        const auto& row = stored.second;
+
+        if (static_cast<std::size_t>(column_index) >= row.size()) {
+            SetError(error, "stored row is missing indexed column '" +
+                            column_name + "'");
+            return false;
+        }
+
+        const sql::Value& value = row[static_cast<std::size_t>(column_index)];
+        if (value.type != sql::Value::Type::INTEGER) {
+            SetError(error, "stored value has an incompatible type for index column '" +
+                            column_name + "'");
+            return false;
+        }
+
+        // Duplicate keys are supported; only an identical key/RID pair fails.
+        if (!built_tree->Insert(value.int_value, rid)) {
+            SetError(error, "duplicate key/RID pair encountered while building index '" +
+                            column_name + "'");
+            return false;
+        }
+    }
+
+    *tree = std::move(built_tree);
+    return true;
+}
+
+bool SqlExecutor::ExecuteCreateIndex(
+    const sql::CreateIndexStatement& statement,
+    std::string* error
+) {
+    try {
+        Validate(sql::Statement{statement}, catalog_);
+
+        std::unique_ptr<BPlusTree> tree;
+        if (!BuildIndexTree(statement.table, statement.column, &tree, error)) {
+            return false;
+        }
+
+        const std::string index_key = NormalizeIdentifier(statement.index_name);
+        bool runtime_registered = false;
+        bool catalog_registered = false;
+
+        try {
+            const auto runtime_insertion =
+                indexes_.emplace(index_key, std::move(tree));
+            if (!runtime_insertion.second) {
+                SetError(error, "runtime index '" + statement.index_name +
+                                "' is already registered");
+                return false;
+            }
+            runtime_registered = true;
+
+            catalog_.CreateIndex(statement);
+            catalog_registered = true;
+
+            if (database_header_ != nullptr) {
+                std::string save_error;
+                if (!CatalogStorage::Save(catalog_, bpm_, *database_header_,
+                                          &save_error)) {
+                    catalog_.RemoveIndex(statement.index_name);
+                    catalog_registered = false;
+                    indexes_.erase(index_key);
+                    runtime_registered = false;
+                    SetError(error, "could not save index metadata: " + save_error);
+                    return false;
+                }
+            }
+
+            return true;
+        } catch (...) {
+            if (catalog_registered) {
+                catalog_.RemoveIndex(statement.index_name);
+            }
+            if (runtime_registered) {
+                indexes_.erase(index_key);
+            }
+            throw;
+        }
+    } catch (const std::exception& exception) {
+        SetError(error, exception.what());
+        return false;
+    }
 }
 
 bool SqlExecutor::ExecuteCreate(
@@ -409,7 +644,15 @@ bool SqlExecutor::ExecuteCreate(
 
         try {
             catalog_.CreateTable(statement);
+            if (!catalog_.SetTableFirstPageId(statement.table, first_page_id))
+                throw std::runtime_error("could not save table starting page");
+            if (database_header_ != nullptr) {
+                std::string save_error;
+                if (!CatalogStorage::Save(catalog_, bpm_, *database_header_, &save_error))
+                    throw std::runtime_error("could not save table list: " + save_error);
+            }
         } catch (...) {
+            catalog_.RemoveTable(statement.table);
             tables_.erase(key);
             runtime_registered = false;
             throw;
@@ -488,6 +731,21 @@ bool SqlExecutor::ExecuteInsert(
         return false;
     }
 
+    // Keep every index on this table synchronized with the inserted row.
+    for (const auto& index : catalog_.Indexes()) {
+        if (NormalizeIdentifier(index.table_name) != key) continue;
+        const int column = schema->ColumnIndex(index.column_name);
+        const auto tree = indexes_.find(NormalizeIdentifier(index.name));
+        if (column < 0 || tree == indexes_.end() ||
+            !tree->second->Insert(
+                statement.values[static_cast<std::size_t>(column)].int_value,
+                new_rid)) {
+            table_it->second.record_table->Delete(new_rid);
+            SetError(error, "failed to update index '" + index.name + "' after INSERT");
+            return false;
+        }
+    }
+
     if (inserted_rid != nullptr) {
         *inserted_rid = new_rid;
     }
@@ -533,8 +791,87 @@ bool SqlExecutor::ExecuteSelect(
     }
 
     std::vector<std::pair<RID, std::vector<sql::Value>>> stored_rows;
+    bool used_index = false;
 
-    if (!table_it->second.record_table->Scan(&stored_rows, error)) {
+    // Use one indexed comparison only when the whole predicate is AND-only.
+    // The complete WHERE expression is still re-evaluated below.
+    if (statement.where.has_value() &&
+        statement.where->comparisons.size() > 0 &&
+        statement.where->connectors.size() + 1 ==
+            statement.where->comparisons.size()) {
+        const bool has_or = std::find(statement.where->connectors.begin(),
+                                      statement.where->connectors.end(),
+                                      sql::LogicalOp::OR) !=
+                            statement.where->connectors.end();
+        if (!has_or) {
+            for (const auto& comparison : statement.where->comparisons) {
+                if (comparison.value.type != sql::Value::Type::INTEGER) continue;
+                const IndexSchema* metadata =
+                    catalog_.GetIndexForColumn(statement.table, comparison.column);
+                if (metadata == nullptr) continue;
+                const auto tree_it = indexes_.find(
+                    NormalizeIdentifier(metadata->name));
+                if (tree_it == indexes_.end()) continue;
+
+                const auto key = comparison.value.int_value;
+                std::vector<std::pair<BPlusTree::Key, RID>> entries;
+                const auto min_key = std::numeric_limits<BPlusTree::Key>::min();
+                const auto max_key = std::numeric_limits<BPlusTree::Key>::max();
+                switch (comparison.op) {
+                    case sql::CompareOp::EQ:
+                        for (const RID& rid : tree_it->second->SearchAll(key))
+                            entries.emplace_back(key, rid);
+                        break;
+                    case sql::CompareOp::NE:
+                        if (key != min_key) {
+                            auto part = tree_it->second->RangeScan(min_key, key - 1);
+                            entries.insert(entries.end(), part.begin(), part.end());
+                        }
+                        if (key != max_key) {
+                            auto part = tree_it->second->RangeScan(key + 1, max_key);
+                            entries.insert(entries.end(), part.begin(), part.end());
+                        }
+                        break;
+                    case sql::CompareOp::LT:
+                        if (key != min_key)
+                            entries = tree_it->second->RangeScan(min_key, key - 1);
+                        break;
+                    case sql::CompareOp::LE:
+                        entries = tree_it->second->RangeScan(min_key, key);
+                        break;
+                    case sql::CompareOp::GT:
+                        if (key != max_key)
+                            entries = tree_it->second->RangeScan(key + 1, max_key);
+                        break;
+                    case sql::CompareOp::GE:
+                        entries = tree_it->second->RangeScan(key, max_key);
+                        break;
+                }
+
+                bool index_lookup_valid = true;
+                for (const auto& entry : entries) {
+                    std::vector<sql::Value> row;
+                    std::string ignored_error;
+                    if (!table_it->second.record_table->Get(
+                            entry.second, &row, &ignored_error)) {
+                        index_lookup_valid = false;
+                        break;
+                    }
+                    stored_rows.emplace_back(entry.second, std::move(row));
+                }
+                if (!index_lookup_valid) {
+                    // A stale/corrupt RID must never cause rows to disappear.
+                    stored_rows.clear();
+                } else {
+                    used_index = true;
+                }
+                break;
+            }
+        }
+    }
+
+    if (!used_index &&
+        !table_it->second.record_table->Scan(&stored_rows, error)) {
         return false;
     }
 
@@ -688,6 +1025,30 @@ bool SqlExecutor::ExecuteUpdate(
                     SetError(error, "failed to update a matching row");
                 return false;
             }
+
+            const auto original = std::find_if(
+                stored_rows.begin(), stored_rows.end(),
+                [&](const auto& stored) { return stored.first == update.first; });
+            if (original == stored_rows.end()) continue;
+
+            for (const auto& index : catalog_.Indexes()) {
+                if (NormalizeIdentifier(index.table_name) !=
+                    NormalizeIdentifier(statement.table)) continue;
+                const int column = schema->ColumnIndex(index.column_name);
+                const auto tree = indexes_.find(NormalizeIdentifier(index.name));
+                if (column < 0 || tree == indexes_.end()) continue;
+                const auto position = static_cast<std::size_t>(column);
+                const auto old_key = original->second[position].int_value;
+                const auto new_key = update.second[position].int_value;
+                if (old_key != new_key) {
+                    tree->second->Remove(old_key, update.first);
+                    if (!tree->second->Insert(new_key, update.first)) {
+                        SetError(error, "failed to update index '" + index.name +
+                                        "' after UPDATE");
+                        return false;
+                    }
+                }
+            }
         }
         return true;
     } catch (const std::exception& exception) {
@@ -775,9 +1136,25 @@ bool SqlExecutor::ExecuteDelete(
         }
 
         for (const RID& rid : matching_rids) {
+            const auto stored = std::find_if(
+                stored_rows.begin(), stored_rows.end(),
+                [&](const auto& row) { return row.first == rid; });
             if (!table_it->second.record_table->Delete(rid)) {
                 SetError(error, "failed to delete a matching row");
                 return false;
+            }
+            if (stored != stored_rows.end()) {
+                for (const auto& index : catalog_.Indexes()) {
+                    if (NormalizeIdentifier(index.table_name) !=
+                        NormalizeIdentifier(statement.table)) continue;
+                    const int column = schema->ColumnIndex(index.column_name);
+                    const auto tree = indexes_.find(NormalizeIdentifier(index.name));
+                    if (column >= 0 && tree != indexes_.end()) {
+                        tree->second->Remove(
+                            stored->second[static_cast<std::size_t>(column)].int_value,
+                            rid);
+                    }
+                }
             }
         }
 

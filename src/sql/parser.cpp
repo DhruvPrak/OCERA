@@ -67,9 +67,34 @@ private:
         if (IsKeyword(first, "SELECT")) return ParseSelect();
         if (IsKeyword(first, "UPDATE")) return ParseUpdate();
         if (IsKeyword(first, "DELETE")) return ParseDelete();
+        if (IsKeyword(first, "SHOW")) return ParseShow();
+        if (IsKeyword(first, "DESC")) return ParseDesc();
+        if (IsKeyword(first, "DROP")) return ParseDrop();
         Fail("expected CREATE, INSERT, SELECT, UPDATE or DELETE but found " +
              Describe(first), first.position);
     }
+
+    Statement ParseShow() {
+    Advance();
+    ExpectKeyword("TABLES");
+    return ShowTablesStatement{};
+}
+
+DescTableStatement ParseDesc() {
+    Advance();
+    DescTableStatement s;
+    s.table = ExpectIdentifier("table name").text;
+    return s;
+}
+
+DropTableStatement ParseDrop() {
+    Advance();
+    ExpectKeyword("TABLE");
+
+    DropTableStatement s;
+    s.table = ExpectIdentifier("table name").text;
+    return s;
+}
 
     Statement ParseCreate() {
         Advance();

@@ -17,7 +17,7 @@ DatabaseInstance::DatabaseInstance(
           free_space_manager_
       ),
       catalog_(),
-      executor_(catalog_, buffer_pool_manager_) {
+      executor_(catalog_, buffer_pool_manager_, &database_header_) {
 }
 
 void DatabaseInstance::Flush() {

@@ -439,6 +439,153 @@ int main() {
             "INSERT INTO fk_employee VALUES (2, 1);", nullptr, &error));
         assert(!executor.Execute(
             "INSERT INTO fk_employee VALUES (3, 99);", nullptr, &error));
+        std::cout << "[29] CREATE INDEX on existing rows\n";
+
+assert(executor.Execute(
+    "CREATE TABLE index_students (id INT, age INT, name TEXT);",
+    nullptr, &error));
+
+assert(executor.Execute(
+    "INSERT INTO index_students VALUES (1, 20, 'Asha');",
+    nullptr, &error));
+
+assert(executor.Execute(
+    "INSERT INTO index_students VALUES (2, 20, 'Riya');",
+    nullptr, &error));
+
+assert(executor.Execute(
+    "CREATE INDEX idx_students_age ON index_students(age);",
+    nullptr, &error));
+
+assert(catalog.HasIndex("idx_students_age"));
+assert(catalog.GetIndexForColumn("index_students", "age") != nullptr);
+
+std::cout << "[29a] Indexed SELECT returns duplicate-key rows\n";
+assert(executor.Execute(
+    "SELECT id FROM index_students WHERE age = 20;",
+    nullptr, &error, &result));
+assert(result.rows.size() == 2);
+
+std::cout << "[29b] INSERT maintains an existing index\n";
+assert(executor.Execute(
+    "INSERT INTO index_students VALUES (3, 30, 'Mina');",
+    nullptr, &error));
+assert(executor.Execute(
+    "SELECT id FROM index_students WHERE age = 30;",
+    nullptr, &error, &result));
+assert(result.rows.size() == 1);
+assert(SameValue(result.rows[0][0], Int(3)));
+
+std::cout << "[29c] UPDATE moves the index entry\n";
+assert(executor.Execute(
+    "UPDATE index_students SET age = 31 WHERE id = 3;",
+    nullptr, &error));
+assert(executor.Execute(
+    "SELECT id FROM index_students WHERE age = 30;",
+    nullptr, &error, &result));
+assert(result.rows.empty());
+assert(executor.Execute(
+    "SELECT id FROM index_students WHERE age = 31;",
+    nullptr, &error, &result));
+assert(result.rows.size() == 1);
+assert(SameValue(result.rows[0][0], Int(3)));
+
+std::cout << "[29d] OR predicate uses safe scan fallback\n";
+assert(executor.Execute(
+    "SELECT id FROM index_students WHERE age = 20 OR id = 3;",
+    nullptr, &error, &result));
+assert(result.rows.size() == 3);
+
+std::cout << "[29e] Indexed range scan returns matching rows\n";
+assert(executor.Execute(
+    "SELECT id FROM index_students WHERE age >= 20 AND age < 21;",
+    nullptr, &error, &result));
+assert(result.rows.size() == 2);
+
+std::cout << "[29f] DELETE removes the index entry\n";
+assert(executor.Execute(
+    "DELETE FROM index_students WHERE age = 31;",
+    nullptr, &error));
+assert(executor.Execute(
+    "SELECT id FROM index_students WHERE age = 31;",
+    nullptr, &error, &result));
+assert(result.rows.empty());
+
+std::cout << "[30] Reject duplicate index creation\n";
+
+assert(!executor.Execute(
+    "CREATE INDEX idx_students_age_2 ON index_students(age);",
+    nullptr, &error));
+
+assert(!error.empty());
+assert(!catalog.HasIndex("idx_students_age_2"));
+
+assert(!executor.Execute(
+    "CREATE INDEX idx_students_age ON index_students(id);",
+    nullptr, &error));
+
+assert(!error.empty());
+
+std::cout << "[31] Reject indexes on unsupported column types\n";
+
+assert(!executor.Execute(
+    "CREATE INDEX idx_students_name ON index_students(name);",
+    nullptr, &error));
+
+assert(!error.empty());
+assert(!catalog.HasIndex("idx_students_name"));
+
+std::cout << "[32] CREATE INDEX on an empty table\n";
+
+assert(executor.Execute(
+    "CREATE TABLE empty_index_table (id INT);",
+    nullptr, &error));
+
+assert(executor.Execute(
+    "CREATE INDEX idx_empty_id ON empty_index_table(id);",
+    nullptr, &error));
+
+assert(catalog.HasIndex("idx_empty_id"));
+        std::cout << "[30] SHOW TABLES\n";
+
+        const bool show_ok =
+            executor.Execute("SHOW TABLES;", nullptr, &error, &result);
+
+        if (!show_ok) {
+            std::cerr << "SHOW TABLES error: " << error << '\n';
+        }
+        assert(show_ok);
+
+        assert(result.column_names.size() == 1);
+        assert(result.column_names[0] == "Tables");
+        assert(!result.rows.empty());
+
+        std::cout << "[31] DESC students\n";
+
+        assert(executor.Execute(
+            "DESC students;",
+            nullptr,
+            &error,
+            &result
+        ));
+
+        assert(result.column_names.size() == 2);
+        assert(result.rows.size() == 3);
+        assert(result.rows[0][0].string_value == "id");
+        assert(result.rows[1][0].string_value == "name");
+        assert(result.rows[2][0].string_value == "age");
+
+        std::cout << "[32] DESC unknown table should fail\n";
+
+        assert(!executor.Execute(
+            "DESC unknown_table;",
+            nullptr,
+            &error,
+            &result
+        ));
+
+        assert(!error.empty());
+
 
         bpm.FlushAllPages();
     }

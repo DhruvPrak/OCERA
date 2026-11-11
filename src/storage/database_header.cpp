@@ -63,6 +63,22 @@ void DatabaseHeader::Flush() const {
     disk_manager_.WritePage(HEADER_PAGE_ID, buf);
 }
 
+void DatabaseHeader::SetCatalogRootPageId(page_id_t page_id) {
+    if (page_id != INVALID_PAGE_ID && page_id < 2) {
+        throw std::invalid_argument("catalog root page ID is invalid");
+    }
+
+    const page_id_t previous_page_id = catalog_root_page_id_;
+    catalog_root_page_id_ = page_id;
+
+    try {
+        Flush();
+    } catch (...) {
+        catalog_root_page_id_ = previous_page_id;
+        throw;
+    }
+}
+
 void DatabaseHeader::Load() {
     char buf[PAGE_SIZE];
     disk_manager_.ReadPage(HEADER_PAGE_ID, buf);

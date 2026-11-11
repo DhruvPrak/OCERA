@@ -10,7 +10,9 @@
 #include "record/record_table.h"
 #include "record/table_heap.h"
 #include "sql/ast.h"
+#include "index/bplus_tree.h"
 #include "storage/buffer_pool_manager.h"
+#include "storage/database_header.h"
 
 namespace ocera {
 
@@ -21,7 +23,8 @@ struct QueryResult {
 
 class SqlExecutor {
 public:
-    SqlExecutor(Catalog& catalog, BufferPoolManager& bpm);
+    SqlExecutor(Catalog& catalog, BufferPoolManager& bpm,
+                DatabaseHeader* database_header = nullptr);
 
     bool Execute(
         const std::string& sql_text,
@@ -45,6 +48,19 @@ public:
     ) const;
 
 private:
+
+    bool ExecuteCreateIndex(
+        const sql::CreateIndexStatement& statement,
+        std::string* error
+    );
+
+    bool BuildIndexTree(
+        const std::string& table_name,
+        const std::string& column_name,
+        std::unique_ptr<BPlusTree>* tree,
+        std::string* error
+    );
+
     struct TableRuntime {
         std::unique_ptr<TableHeap> heap;
         std::unique_ptr<RecordTable> record_table;
@@ -79,7 +95,9 @@ private:
 
     Catalog& catalog_;
     BufferPoolManager& bpm_;
+    DatabaseHeader* database_header_;
     std::map<std::string, TableRuntime> tables_;
+    std::map<std::string, std::unique_ptr<BPlusTree>> indexes_;
 };
 
 }  // namespace ocera

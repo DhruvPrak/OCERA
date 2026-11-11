@@ -9,9 +9,11 @@ namespace {
 
 const std::set<std::string>& Keywords() {
     static const std::set<std::string> kKeywords = {
-        "CREATE", "TABLE", "INDEX", "ON", "INSERT", "INTO", "VALUES",
-        "SELECT", "FROM", "WHERE", "UPDATE", "SET", "DELETE",
-        "INT", "TEXT", "AND", "OR", "PRIMARY", "KEY", "UNIQUE", "FOREIGN", "REFERENCES"};
+    "CREATE", "TABLE", "INDEX", "ON", "INSERT", "INTO", "VALUES",
+    "SELECT", "FROM", "WHERE", "UPDATE", "SET", "DELETE",
+    "SHOW", "TABLES", "DESC", "DROP",
+    "INT", "TEXT", "AND", "OR", "PRIMARY", "KEY", "UNIQUE",
+    "FOREIGN", "REFERENCES"};
     return kKeywords;
 }
 

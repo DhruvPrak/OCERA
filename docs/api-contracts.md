@@ -662,3 +662,29 @@ not partially apply the requested statement. This is statement-level prevalidati
 not transaction rollback or crash atomicity: an underlying storage failure while
 writing multiple rows can still leave a partial operation. The executor remains
 single-threaded/non-thread-safe and is not integrated with transaction locks or WAL.
+
+## 15. Clean-restart table metadata persistence
+
+**Status:** Implemented for normal shutdown/restart; crash recovery is not provided.
+
+`TableSchema::first_page_id` records the first page of a table's `TableHeap`.
+`CatalogStorage` saves table names, column types, primary/unique keys, foreign
+keys, index descriptions (metadata only; actual B+Tree structures are not persisted or reconstructed), and each table's first page ID into a linked set of
+catalog pages. The first catalog page is referenced by
+`DatabaseHeader::GetCatalogRootPageId()`.
+
+Public operations:
+
+- `CatalogStorage::Save(catalog, bpm, header, error)` writes a replacement
+  catalog page chain, flushes it, updates the header pointer, then attempts to
+  release the previous chain.
+- `CatalogStorage::Load(catalog, bpm, header, error)` restores catalog metadata.
+- `SqlExecutor(catalog, bpm, &header)` loads metadata and reopens each table heap.
+
+The SQL shell uses this constructor. Existing two-argument `SqlExecutor`
+construction remains available for isolated/in-memory tests. A successful
+`CREATE TABLE` saves the updated table list. Normal shell exit flushes dirty
+table pages. This is clean-shutdown persistence only: no WAL, atomic commit,
+torn-write protection, or recovery after an unclean process termination is
+provided. The catalog page format has its own format marker; changes to it
+require compatibility review and tests.

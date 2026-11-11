@@ -180,6 +180,17 @@ void Catalog::CreateTable(const sql::CreateTableStatement& stmt) {
     tables_.emplace(key, std::move(schema));
 }
 
+bool Catalog::SetTableFirstPageId(const std::string& name, page_id_t page_id) {
+    auto it = tables_.find(NormalizeIdentifier(name));
+    if (it == tables_.end() || page_id < 2) return false;
+    it->second.first_page_id = page_id;
+    return true;
+}
+
+bool Catalog::RemoveTable(const std::string& name) {
+    return tables_.erase(NormalizeIdentifier(name)) != 0;
+}
+
 bool Catalog::HasTable(const std::string& name) const {
     return tables_.count(NormalizeIdentifier(name)) != 0;
 }
@@ -231,6 +242,10 @@ void Catalog::CreateIndex(const sql::CreateIndexStatement& stmt) {
     indexes_.emplace(index_key, std::move(schema));
 }
 
+bool Catalog::RemoveIndex(const std::string& name) {
+    return indexes_.erase(NormalizeIdentifier(name)) != 0;
+}
+
 bool Catalog::HasIndex(const std::string& name) const {
     return indexes_.count(NormalizeIdentifier(name)) != 0;
 }
@@ -252,6 +267,17 @@ const IndexSchema* Catalog::GetIndexForColumn(const std::string& table,
         }
     }
     return nullptr;
+}
+
+std::vector<IndexSchema> Catalog::Indexes() const {
+    std::vector<IndexSchema> result;
+    result.reserve(indexes_.size());
+
+    for (const auto& entry : indexes_) {
+        result.push_back(entry.second);
+    }
+
+    return result;
 }
 
 }  // namespace ocera

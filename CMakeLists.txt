@@ -24,7 +24,7 @@ add_executable(ocera src/main.cpp)
 
 target_link_libraries(ocera
     PRIVATE
-        ocera_sql_executor
+        ocera_database_instance
 )
 
 add_executable(test_storage tests/test_storage.cpp)
@@ -80,6 +80,7 @@ target_link_libraries(test_bplus_tree PRIVATE ocera_index)
 # Catalog and semantic validation (in-memory). Uses the AST from ocera_sql.
 add_library(ocera_catalog
     src/catalog/catalog.cpp
+    src/catalog/catalog_storage.cpp
     src/catalog/validator.cpp
 )
 target_include_directories(ocera_catalog PUBLIC src)
@@ -206,3 +207,7 @@ add_executable(test_statement_reader
 )
 
 target_include_directories(test_statement_reader PRIVATE src)
+
+# Clean-shutdown persistence across SQL shell restarts.
+add_executable(test_restart_persistence tests/test_restart_persistence.cpp)
+target_link_libraries(test_restart_persistence PRIVATE ocera_sql_executor)

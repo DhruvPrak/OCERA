@@ -117,3 +117,14 @@ writes. This is not transaction rollback or crash atomicity; storage failures du
 multi-row writes may still leave partial changes. Broader team confirmation of P-10
 remains pending, and the implementation must be tested on the integration branch
 before foreign-key integrity is described as verified project-wide.
+
+
+## 6. Clean-restart metadata storage
+
+| ID | Decision / implementation | Reason | Affected modules | Status |
+|---|---|---|---|---|
+| P-11 | Store the table list in linked catalog pages; keep the first catalog page in the existing DatabaseHeader root field. Store each table's first record-page ID with its schema. | Allows the SQL shell to reopen existing tables after a normal close without changing the existing header layout. | Catalog, DatabaseHeader, SQL Executor | Implemented for clean restart; broader team confirmation pending |
+
+This does not provide crash recovery. Catalog pages are written before the header
+pointer is switched, and normal shell exit flushes table data. No WAL or
+transactional atomicity is implied.

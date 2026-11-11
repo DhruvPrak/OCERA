@@ -97,9 +97,21 @@ struct DeleteStatement {
     std::optional<Condition> where;
 };
 
+struct ShowTablesStatement {};
+
+struct DescTableStatement {
+    std::string table;
+};
+
+struct DropTableStatement {
+    std::string table;
+};
+
 using Statement = std::variant<CreateTableStatement, CreateIndexStatement,
                                InsertStatement, SelectStatement,
-                               UpdateStatement, DeleteStatement>;
+                               UpdateStatement, DeleteStatement,
+                               ShowTablesStatement, DescTableStatement,
+                               DropTableStatement>;
 
 }  // namespace sql
 }  // namespace ocera
