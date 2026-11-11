@@ -1,5 +1,6 @@
 #include "catalog/validator.h"
 
+#include <algorithm>
 #include <set>
 
 namespace ocera {
@@ -350,8 +351,32 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
                     throw SemanticError("JOIN columns must have matching data types");
             }
         }
-        if (!s->select_all)
-            for (const auto& name : s->columns) (void)resolve(name);
+        std::vector<const ColumnSchema*> group_columns;
+        for (const auto& name : s->group_by)
+            group_columns.push_back(resolve(name));
+
+        auto require_grouped = [&](const std::string& name, const char* clause) {
+            const auto* column = resolve(name);
+            if (std::find(group_columns.begin(), group_columns.end(), column) ==
+                group_columns.end())
+                throw SemanticError(std::string(clause) + " column '" + name +
+                                    "' must appear in GROUP BY");
+        };
+
+        if (!s->group_by.empty()) {
+            if (s->select_all) {
+                for (const auto* table : tables)
+                    for (const auto& column : table->columns)
+                        require_grouped(table->name + "." + column.name, "SELECT");
+            } else {
+                for (const auto& name : s->columns) require_grouped(name, "SELECT");
+            }
+            for (const auto& item : s->order_by)
+                require_grouped(item.column, "ORDER BY");
+        } else if (s->having) {
+            throw SemanticError("HAVING requires GROUP BY");
+        }
+
         for (const auto& item : s->order_by) (void)resolve(item.column);
         if (s->where) {
             if (s->where->predicates.empty() ||
@@ -363,6 +388,34 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
                     predicate.type == sql::PredicateType::LIKE) {
                     if (predicate.values.size() != 1)
                         throw SemanticError("malformed WHERE predicate");
+                    if (predicate.type == sql::PredicateType::COMPARISON)
+                        CheckValueType(*column, predicate.values[0], At(predicate.position));
+                    else if (column->type != sql::ColumnType::TEXT ||
+                             predicate.values[0].type != sql::Value::Type::STRING)
+                        throw SemanticError("LIKE requires TEXT values" + At(predicate.position));
+                } else if (predicate.type == sql::PredicateType::IN) {
+                    for (const auto& value : predicate.values)
+                        CheckValueType(*column, value, At(predicate.position));
+                } else if (predicate.type == sql::PredicateType::BETWEEN) {
+                    if (predicate.values.size() != 2)
+                        throw SemanticError("BETWEEN requires two values" + At(predicate.position));
+                    for (const auto& value : predicate.values)
+                        CheckValueType(*column, value, At(predicate.position));
+                }
+            }
+        }
+        if (s->having) {
+            if (s->having->predicates.empty() ||
+                s->having->connectors.size() + 1 != s->having->predicates.size())
+                throw SemanticError("malformed HAVING condition");
+            for (const auto& predicate : s->having->predicates) {
+                const auto* column = resolve(predicate.column);
+                if (!s->group_by.empty())
+                    require_grouped(predicate.column, "HAVING");
+                if (predicate.type == sql::PredicateType::COMPARISON ||
+                    predicate.type == sql::PredicateType::LIKE) {
+                    if (predicate.values.size() != 1)
+                        throw SemanticError("malformed HAVING predicate");
                     if (predicate.type == sql::PredicateType::COMPARISON)
                         CheckValueType(*column, predicate.values[0], At(predicate.position));
                     else if (column->type != sql::ColumnType::TEXT ||

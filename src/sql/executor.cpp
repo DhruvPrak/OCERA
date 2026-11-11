@@ -1004,6 +1004,59 @@ bool SqlExecutor::ExecuteSelect(
         result.column_names.push_back(name);
     }
 
+    std::vector<std::vector<sql::Value>> result_rows;
+    result_rows.reserve(rows.size());
+    for (const auto& row : rows) {
+        if (!statement.where || condition_matches(*statement.where, row))
+            result_rows.push_back(row);
+    }
+
+    if (!statement.group_by.empty()) {
+        std::vector<std::size_t> group_indices;
+        group_indices.reserve(statement.group_by.size());
+        for (const auto& name : statement.group_by) {
+            std::size_t index = 0;
+            if (!resolve(name, &index)) return false;
+            group_indices.push_back(index);
+        }
+
+        auto same_group = [&](const std::vector<sql::Value>& left,
+                              const std::vector<sql::Value>& right) {
+            for (const std::size_t index : group_indices) {
+                if (index >= left.size() || index >= right.size()) return false;
+                const auto& a = left[index];
+                const auto& b = right[index];
+                if (a.type != b.type) return false;
+                if (a.type == sql::Value::Type::NULL_VALUE) continue;
+                if (a.type == sql::Value::Type::INTEGER) {
+                    if (a.int_value != b.int_value) return false;
+                } else if (a.string_value != b.string_value) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        std::vector<std::vector<sql::Value>> grouped_rows;
+        grouped_rows.reserve(result_rows.size());
+        for (const auto& candidate : result_rows) {
+            const bool exists = std::any_of(
+                grouped_rows.begin(), grouped_rows.end(),
+                [&](const auto& existing) { return same_group(candidate, existing); });
+            if (!exists) grouped_rows.push_back(candidate);
+        }
+        result_rows = std::move(grouped_rows);
+    }
+
+    if (statement.having) {
+        result_rows.erase(
+            std::remove_if(result_rows.begin(), result_rows.end(),
+                [&](const auto& row) {
+                    return !condition_matches(*statement.having, row);
+                }),
+            result_rows.end());
+    }
+
     struct OutputRow {
         std::vector<sql::Value> projected;
         std::vector<sql::Value> sort_values;
@@ -1017,8 +1070,7 @@ bool SqlExecutor::ExecuteSelect(
     }
 
     std::vector<OutputRow> output_rows;
-    for (const auto& row : rows) {
-        if (statement.where && !condition_matches(*statement.where,row)) continue;
+    for (const auto& row : result_rows) {
         OutputRow output;
         output.projected.reserve(projection.size());
         for (std::size_t idx : projection) output.projected.push_back(row[idx]);

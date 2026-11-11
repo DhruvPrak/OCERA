@@ -124,6 +124,8 @@ struct SelectStatement {
     std::vector<std::string> columns;
     std::vector<JoinClause> joins;
     std::optional<Condition> where;
+    std::vector<std::string> group_by;
+    std::optional<Condition> having;
     std::vector<OrderByItem> order_by;
     std::optional<std::size_t> limit;
     std::size_t offset = 0;

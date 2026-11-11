@@ -246,6 +246,16 @@ DropTableStatement ParseDrop() {
             s.joins.push_back(ParseJoinClause());
         }
         s.where = ParseOptionalWhere();
+        if (IsKeyword(Peek(), "GROUP")) {
+            Advance();
+            ExpectKeyword("BY");
+            while (true) {
+                s.group_by.push_back(ParseColumnReference());
+                if (!IsSymbol(Peek(), ",")) break;
+                Advance();
+            }
+        }
+        s.having = ParseOptionalHaving();
         if (IsKeyword(Peek(), "ORDER")) {
             Advance();
             ExpectKeyword("BY");
@@ -374,6 +384,22 @@ DropTableStatement ParseDrop() {
     }
     std::optional<Condition> ParseOptionalWhere() {
         if (!IsKeyword(Peek(), "WHERE")) return std::nullopt;
+        Advance();
+        Condition condition;
+        pending_comparisons_.clear();
+        condition.predicates.push_back(ParsePredicate());
+        while (IsKeyword(Peek(), "AND") || IsKeyword(Peek(), "OR")) {
+            condition.connectors.push_back(
+                Peek().text == "AND" ? LogicalOp::AND : LogicalOp::OR);
+            Advance();
+            condition.predicates.push_back(ParsePredicate());
+        }
+        condition.comparisons = pending_comparisons_;
+        return condition;
+    }
+
+    std::optional<Condition> ParseOptionalHaving() {
+        if (!IsKeyword(Peek(), "HAVING")) return std::nullopt;
         Advance();
         Condition condition;
         pending_comparisons_.clear();

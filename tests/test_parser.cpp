@@ -419,6 +419,27 @@ int main() {
     }
     Report("SELECT modifiers", before);
 
+    std::cout << "[24] GROUP BY and HAVING" << std::endl;
+    before = g_failures;
+    {
+        auto grouped = ParseAs<SelectStatement>(
+            "SELECT department, region FROM staff "
+            "WHERE id > 0 GROUP BY department, region "
+            "HAVING department = 'Engineering' ORDER BY region DESC LIMIT 4");
+        Check(grouped.group_by.size() == 2, "multiple GROUP BY columns retained");
+        if (grouped.group_by.size() == 2) {
+            Check(grouped.group_by[0] == "department", "first grouping column retained");
+            Check(grouped.group_by[1] == "region", "second grouping column retained");
+        }
+        Check(grouped.having.has_value() && grouped.having->predicates.size() == 1,
+              "HAVING condition retained");
+        Check(ParseFails("SELECT department FROM staff GROUP BY"),
+              "missing GROUP BY column rejected");
+        Check(ParseFails("SELECT department FROM staff GROUP BY department HAVING"),
+              "missing HAVING predicate rejected");
+    }
+    Report("GROUP BY and HAVING", before);
+
     std::cout << "[22] FOREIGN KEY declarations" << std::endl;
     before = g_failures;
     {

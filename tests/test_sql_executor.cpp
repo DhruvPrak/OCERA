@@ -858,6 +858,57 @@ assert(catalog.HasIndex("idx_empty_id"));
             "SELECT DISTINCT name, score FROM task4_sort;", nullptr, &error, &result));
         assert(result.rows.size() == 3);
 
+        std::cout << "[49] GROUP BY produces one row per distinct key" << std::endl;
+        assert(executor.Execute(
+            "CREATE TABLE task5_groups (id INT, department TEXT, region TEXT);",
+            nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO task5_groups VALUES (1, 'Engineering', 'North');", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO task5_groups VALUES (2, 'Engineering', 'North');", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO task5_groups VALUES (3, 'Sales', 'South');", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO task5_groups VALUES (4, 'Sales', 'West');", nullptr, &error));
+        assert(executor.Execute(
+            "SELECT department FROM task5_groups GROUP BY department ORDER BY department;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 2);
+        assert(SameValue(result.rows[0][0], Text("Engineering")));
+        assert(SameValue(result.rows[1][0], Text("Sales")));
+
+        std::cout << "[50] GROUP BY supports composite grouping keys" << std::endl;
+        assert(executor.Execute(
+            "SELECT department, region FROM task5_groups "
+            "GROUP BY department, region ORDER BY department, region;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 3);
+
+        std::cout << "[51] HAVING filters grouped rows" << std::endl;
+        assert(executor.Execute(
+            "SELECT department FROM task5_groups GROUP BY department "
+            "HAVING department = 'Sales';", nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Text("Sales")));
+
+        std::cout << "[52] GROUP BY rejects non-grouped projected columns" << std::endl;
+        assert(!executor.Execute(
+            "SELECT id, department FROM task5_groups GROUP BY department;",
+            nullptr, &error, &result));
+        assert(!error.empty());
+
+        std::cout << "[53] HAVING rejects non-grouped columns" << std::endl;
+        assert(!executor.Execute(
+            "SELECT department FROM task5_groups GROUP BY department "
+            "HAVING id > 1;", nullptr, &error, &result));
+        assert(!error.empty());
+
+        std::cout << "[54] HAVING requires GROUP BY" << std::endl;
+        assert(!executor.Execute(
+            "SELECT department FROM task5_groups HAVING department = 'Sales';",
+            nullptr, &error, &result));
+        assert(!error.empty());
+
         bpm.FlushAllPages();
     }
 
