@@ -1,6 +1,7 @@
 #include "sql/executor.h"
 
 #include <exception>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -307,6 +308,25 @@ SqlExecutor::SqlExecutor(Catalog& catalog, BufferPoolManager& bpm,
         runtime.record_table = std::move(record_table);
         tables_.emplace(NormalizeIdentifier(name), std::move(runtime));
     }
+
+    // CatalogStorage persists index metadata, while B+Trees are in-memory
+    // structures. Rebuild each runtime tree from its table rows on restart.
+    for (const auto& index : catalog_.Indexes()) {
+        std::unique_ptr<BPlusTree> tree;
+        std::string index_error;
+        if (!BuildIndexTree(index.table_name, index.column_name, &tree,
+                            &index_error)) {
+            throw std::runtime_error(
+                "could not rebuild index '" + index.name + "': " + index_error);
+        }
+
+        const auto insertion = indexes_.emplace(
+            NormalizeIdentifier(index.name), std::move(tree));
+        if (!insertion.second) {
+            throw std::runtime_error(
+                "duplicate runtime index registration for '" + index.name + "'");
+        }
+    }
 }
 
 bool SqlExecutor::Execute(
@@ -353,6 +373,11 @@ bool SqlExecutor::Execute(
     if (const auto* create =
             std::get_if<sql::CreateTableStatement>(&statement)) {
         return ExecuteCreate(*create, error);
+    }
+
+    if (const auto* create_index =
+            std::get_if<sql::CreateIndexStatement>(&statement)) {
+        return ExecuteCreateIndex(*create_index, error);
     }
 
     if (const auto* insert =
@@ -436,6 +461,139 @@ if (const auto* desc =
 
     SetError(error, "unsupported SQL statement");
     return false;
+}
+
+bool SqlExecutor::BuildIndexTree(
+    const std::string& table_name,
+    const std::string& column_name,
+    std::unique_ptr<BPlusTree>* tree,
+    std::string* error
+) {
+    if (tree == nullptr) {
+        SetError(error, "index tree output pointer is null");
+        return false;
+    }
+
+    tree->reset();
+
+    const TableSchema* schema = catalog_.GetTable(table_name);
+    if (schema == nullptr) {
+        SetError(error, "table '" + table_name + "' does not exist");
+        return false;
+    }
+
+    const int column_index = schema->ColumnIndex(column_name);
+    if (column_index < 0 ||
+        static_cast<std::size_t>(column_index) >= schema->columns.size()) {
+        SetError(error, "unknown index column '" + column_name +
+                        "' in table '" + table_name + "'");
+        return false;
+    }
+
+    if (schema->columns[static_cast<std::size_t>(column_index)].type !=
+        sql::ColumnType::INT) {
+        SetError(error, "B+Tree indexes currently support INT columns only");
+        return false;
+    }
+
+    const auto table_it = tables_.find(NormalizeIdentifier(table_name));
+    if (table_it == tables_.end() || table_it->second.record_table == nullptr) {
+        SetError(error, "table '" + table_name +
+                        "' has no runtime storage managed by this SQL executor");
+        return false;
+    }
+
+    StoredRows rows;
+    if (!table_it->second.record_table->Scan(&rows, error)) {
+        return false;
+    }
+
+    auto built_tree = std::make_unique<BPlusTree>();
+    for (const auto& stored : rows) {
+        const RID& rid = stored.first;
+        const auto& row = stored.second;
+
+        if (static_cast<std::size_t>(column_index) >= row.size()) {
+            SetError(error, "stored row is missing indexed column '" +
+                            column_name + "'");
+            return false;
+        }
+
+        const sql::Value& value = row[static_cast<std::size_t>(column_index)];
+        if (value.type != sql::Value::Type::INTEGER) {
+            SetError(error, "stored value has an incompatible type for index column '" +
+                            column_name + "'");
+            return false;
+        }
+
+        // Duplicate keys are supported; only an identical key/RID pair fails.
+        if (!built_tree->Insert(value.int_value, rid)) {
+            SetError(error, "duplicate key/RID pair encountered while building index '" +
+                            column_name + "'");
+            return false;
+        }
+    }
+
+    *tree = std::move(built_tree);
+    return true;
+}
+
+bool SqlExecutor::ExecuteCreateIndex(
+    const sql::CreateIndexStatement& statement,
+    std::string* error
+) {
+    try {
+        Validate(sql::Statement{statement}, catalog_);
+
+        std::unique_ptr<BPlusTree> tree;
+        if (!BuildIndexTree(statement.table, statement.column, &tree, error)) {
+            return false;
+        }
+
+        const std::string index_key = NormalizeIdentifier(statement.index_name);
+        bool runtime_registered = false;
+        bool catalog_registered = false;
+
+        try {
+            const auto runtime_insertion =
+                indexes_.emplace(index_key, std::move(tree));
+            if (!runtime_insertion.second) {
+                SetError(error, "runtime index '" + statement.index_name +
+                                "' is already registered");
+                return false;
+            }
+            runtime_registered = true;
+
+            catalog_.CreateIndex(statement);
+            catalog_registered = true;
+
+            if (database_header_ != nullptr) {
+                std::string save_error;
+                if (!CatalogStorage::Save(catalog_, bpm_, *database_header_,
+                                          &save_error)) {
+                    catalog_.RemoveIndex(statement.index_name);
+                    catalog_registered = false;
+                    indexes_.erase(index_key);
+                    runtime_registered = false;
+                    SetError(error, "could not save index metadata: " + save_error);
+                    return false;
+                }
+            }
+
+            return true;
+        } catch (...) {
+            if (catalog_registered) {
+                catalog_.RemoveIndex(statement.index_name);
+            }
+            if (runtime_registered) {
+                indexes_.erase(index_key);
+            }
+            throw;
+        }
+    } catch (const std::exception& exception) {
+        SetError(error, exception.what());
+        return false;
+    }
 }
 
 bool SqlExecutor::ExecuteCreate(

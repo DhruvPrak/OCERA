@@ -57,6 +57,12 @@ int main() {
             "INSERT INTO courses VALUES (10, 1);",
             nullptr, &error));
 
+        CHECK(sql.Execute(
+            "CREATE INDEX idx_courses_student_id ON courses(student_id);",
+            nullptr, &error));
+
+        CHECK(catalog.HasIndex("idx_courses_student_id"));
+
         bpm.FlushAllPages();
     }
 
@@ -71,6 +77,16 @@ int main() {
 
         CHECK(catalog.HasTable("students"));
         CHECK(catalog.HasTable("courses"));
+
+        // Index metadata must survive restart.
+        CHECK(catalog.HasIndex("idx_courses_student_id"));
+
+        const IndexSchema* index =
+            catalog.GetIndex("idx_courses_student_id");
+
+        CHECK(index != nullptr);
+        CHECK(index->table_name == "courses");
+        CHECK(index->column_name == "student_id");
 
         CHECK(sql.Execute(
             "SELECT * FROM students;",
@@ -97,6 +113,8 @@ int main() {
         BufferPoolManager bpm(8, disk, space);
         Catalog catalog;
         SqlExecutor sql(catalog, bpm, &header);
+
+        CHECK(catalog.HasIndex("idx_courses_student_id"));
 
         CHECK(sql.Execute(
             "SELECT * FROM students WHERE id = 1;",

@@ -439,8 +439,63 @@ int main() {
             "INSERT INTO fk_employee VALUES (2, 1);", nullptr, &error));
         assert(!executor.Execute(
             "INSERT INTO fk_employee VALUES (3, 99);", nullptr, &error));
+        std::cout << "[29] CREATE INDEX on existing rows\n";
 
-            std::cout << "[29] SHOW TABLES\n";
+assert(executor.Execute(
+    "CREATE TABLE index_students (id INT, age INT, name TEXT);",
+    nullptr, &error));
+
+assert(executor.Execute(
+    "INSERT INTO index_students VALUES (1, 20, 'Asha');",
+    nullptr, &error));
+
+assert(executor.Execute(
+    "INSERT INTO index_students VALUES (2, 20, 'Riya');",
+    nullptr, &error));
+
+assert(executor.Execute(
+    "CREATE INDEX idx_students_age ON index_students(age);",
+    nullptr, &error));
+
+assert(catalog.HasIndex("idx_students_age"));
+assert(catalog.GetIndexForColumn("index_students", "age") != nullptr);
+
+std::cout << "[30] Reject duplicate index creation\n";
+
+assert(!executor.Execute(
+    "CREATE INDEX idx_students_age_2 ON index_students(age);",
+    nullptr, &error));
+
+assert(!error.empty());
+assert(!catalog.HasIndex("idx_students_age_2"));
+
+assert(!executor.Execute(
+    "CREATE INDEX idx_students_age ON index_students(id);",
+    nullptr, &error));
+
+assert(!error.empty());
+
+std::cout << "[31] Reject indexes on unsupported column types\n";
+
+assert(!executor.Execute(
+    "CREATE INDEX idx_students_name ON index_students(name);",
+    nullptr, &error));
+
+assert(!error.empty());
+assert(!catalog.HasIndex("idx_students_name"));
+
+std::cout << "[32] CREATE INDEX on an empty table\n";
+
+assert(executor.Execute(
+    "CREATE TABLE empty_index_table (id INT);",
+    nullptr, &error));
+
+assert(executor.Execute(
+    "CREATE INDEX idx_empty_id ON empty_index_table(id);",
+    nullptr, &error));
+
+assert(catalog.HasIndex("idx_empty_id"));
+        std::cout << "[30] SHOW TABLES\n";
 
         const bool show_ok =
             executor.Execute("SHOW TABLES;", nullptr, &error, &result);
@@ -454,7 +509,7 @@ int main() {
         assert(result.column_names[0] == "Tables");
         assert(!result.rows.empty());
 
-        std::cout << "[30] DESC students\n";
+        std::cout << "[31] DESC students\n";
 
         assert(executor.Execute(
             "DESC students;",
@@ -469,7 +524,7 @@ int main() {
         assert(result.rows[1][0].string_value == "name");
         assert(result.rows[2][0].string_value == "age");
 
-        std::cout << "[31] DESC unknown table should fail\n";
+        std::cout << "[32] DESC unknown table should fail\n";
 
         assert(!executor.Execute(
             "DESC unknown_table;",
