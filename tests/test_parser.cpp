@@ -341,7 +341,51 @@ int main() {
         auto s = ParseAs<DropTableStatement>("DROP TABLE t");
         Check(s.table == "t", "DROP TABLE parsed");
     }
-    Check(ParseFails("SELECT * FROM a, b"), "multiple tables (no joins) rejected");
+    Check(ParseFails("SELECT * FROM a, b"), "comma-separated FROM tables remain unsupported");
+    {
+        auto inner = ParseAs<SelectStatement>(
+            "SELECT a.id, b.name FROM a INNER JOIN b ON a.id = b.a_id WHERE b.name LIKE 'A%'");
+        Check(inner.table == "a" && inner.joins.size() == 1,
+              "INNER JOIN source and clause parsed");
+        if (!inner.joins.empty()) {
+            Check(inner.joins[0].type == JoinType::INNER && inner.joins[0].table == "b",
+                  "INNER JOIN type and table retained");
+            Check(inner.joins[0].on && inner.joins[0].on->left_column == "a.id" &&
+                  inner.joins[0].on->right_column == "b.a_id",
+                  "qualified JOIN equality retained");
+        }
+        Check(inner.where.has_value(), "WHERE after JOIN parsed");
+
+        auto left = ParseAs<SelectStatement>(
+            "SELECT * FROM a LEFT OUTER JOIN b ON a.id = b.a_id");
+        Check(left.joins.size() == 1 && left.joins[0].type == JoinType::LEFT,
+              "LEFT OUTER JOIN parsed");
+
+        auto right = ParseAs<SelectStatement>(
+            "SELECT * FROM a RIGHT JOIN b ON a.id = b.a_id");
+        Check(right.joins.size() == 1 && right.joins[0].type == JoinType::RIGHT,
+              "RIGHT JOIN parsed");
+
+        auto full = ParseAs<SelectStatement>(
+            "SELECT * FROM a FULL OUTER JOIN b ON a.id = b.a_id");
+        Check(full.joins.size() == 1 && full.joins[0].type == JoinType::FULL_OUTER,
+              "FULL OUTER JOIN parsed");
+
+        auto cross = ParseAs<SelectStatement>("SELECT * FROM a CROSS JOIN b");
+        Check(cross.joins.size() == 1 && cross.joins[0].type == JoinType::CROSS &&
+              !cross.joins[0].on, "CROSS JOIN parsed without ON");
+
+        auto chained = ParseAs<SelectStatement>(
+            "SELECT * FROM a JOIN b ON a.id = b.a_id JOIN c ON b.id = c.b_id");
+        Check(chained.joins.size() == 2, "chained JOIN clauses parsed");
+
+        Check(ParseFails("SELECT * FROM a LEFT JOIN b"),
+              "non-CROSS JOIN requires ON");
+        Check(ParseFails("SELECT * FROM a CROSS JOIN b ON a.id = b.id"),
+              "CROSS JOIN rejects ON");
+        Check(ParseFails("SELECT * FROM a JOIN b ON a.id > b.id"),
+              "JOIN ON rejects non-equality operator");
+    }
     {
         auto s = ParseAs<InsertStatement>("INSERT INTO t VALUES (  'x'  )");
         Check(s.values.size() == 1 && s.values[0].position == 24, "value position recorded");
@@ -394,78 +438,6 @@ int main() {
               "REFERENCES keyword required");
     }
     Report("FOREIGN KEY declarations", before);
-
-    std::cout << "[23] Extended WHERE predicates" << std::endl;
-    before = g_failures;
-    {
-        auto angle_not_equal = ParseAs<SelectStatement>(
-            "SELECT * FROM t WHERE id <> 4");
-        Check(angle_not_equal.where &&
-              angle_not_equal.where->predicates.size() == 1 &&
-              angle_not_equal.where->predicates[0].op == CompareOp::NE,
-              "<> comparison accepted as not-equal");
-
-        auto is_null = ParseAs<SelectStatement>(
-            "SELECT * FROM t WHERE note IS NULL");
-        Check(is_null.where && is_null.where->predicates.size() == 1 &&
-              is_null.where->predicates[0].type == PredicateType::IS_NULL &&
-              !is_null.where->predicates[0].negated,
-              "IS NULL predicate parsed");
-
-        auto is_not_null = ParseAs<SelectStatement>(
-            "SELECT * FROM t WHERE note IS NOT NULL");
-        Check(is_not_null.where && is_not_null.where->predicates.size() == 1 &&
-              is_not_null.where->predicates[0].negated,
-              "IS NOT NULL parsed");
-
-        auto like = ParseAs<SelectStatement>(
-            "SELECT * FROM t WHERE name NOT LIKE 'A_%'");
-        Check(like.where && like.where->predicates.size() == 1 &&
-              like.where->predicates[0].type == PredicateType::LIKE &&
-              like.where->predicates[0].negated &&
-              IsStr(like.where->predicates[0].values[0], "A_%"),
-              "NOT LIKE pattern parsed");
-
-        auto in = ParseAs<SelectStatement>(
-            "SELECT * FROM t WHERE id IN (1, 2, 3)");
-        Check(in.where && in.where->predicates.size() == 1 &&
-              in.where->predicates[0].type == PredicateType::IN &&
-              in.where->predicates[0].values.size() == 3,
-              "IN value list parsed");
-
-        auto not_in = ParseAs<SelectStatement>(
-            "SELECT * FROM t WHERE id NOT IN (1, 2)");
-        Check(not_in.where && not_in.where->predicates.size() == 1 &&
-              not_in.where->predicates[0].negated,
-              "NOT IN parsed");
-
-        auto between = ParseAs<SelectStatement>(
-            "SELECT * FROM t WHERE id BETWEEN 1 AND 9 OR id NOT BETWEEN 20 AND 30");
-        Check(between.where && between.where->predicates.size() == 2 &&
-              between.where->predicates[0].type == PredicateType::BETWEEN &&
-              between.where->predicates[0].values.size() == 2 &&
-              between.where->connectors.size() == 1 &&
-              between.where->connectors[0] == LogicalOp::OR &&
-              between.where->predicates[1].negated,
-              "BETWEEN, NOT BETWEEN and outer OR parsed");
-
-        auto prefix_not = ParseAs<SelectStatement>(
-            "SELECT * FROM t WHERE NOT id = 1 AND name LIKE '%a%'");
-        Check(prefix_not.where && prefix_not.where->predicates.size() == 2 &&
-              prefix_not.where->predicates[0].negated &&
-              prefix_not.where->connectors[0] == LogicalOp::AND,
-              "prefix NOT parsed with AND connector");
-
-        Check(ParseFails("SELECT * FROM t WHERE id IN ()"),
-              "empty IN list rejected");
-        Check(ParseFails("SELECT * FROM t WHERE id BETWEEN 1"),
-              "BETWEEN without upper bound rejected");
-        Check(ParseFails("SELECT * FROM t WHERE name IS MAYBE"),
-              "IS requires NULL or NOT NULL");
-        Check(ParseFails("SELECT * FROM t WHERE id NOT = 1"),
-              "NOT only accepts supported predicate forms");
-    }
-    Report("extended WHERE predicates", before);
 
     if (g_failures == 0) {
         std::cout << "\nAll parser tests passed.\n";

@@ -58,6 +58,17 @@ private:
                  Peek().position);
         return Advance();
     }
+    std::string ParseColumnReference(std::size_t* position = nullptr) {
+        const Token& first = ExpectIdentifier("column name");
+        if (position) *position = first.position;
+        std::string name = first.text;
+        while (IsSymbol(Peek(), ".")) {
+            Advance();
+            name += ".";
+            name += ExpectIdentifier("qualified column name component").text;
+        }
+        return name;
+    }
 
     Statement ParseBody() {
         const Token& first = Peek();
@@ -220,16 +231,76 @@ DropTableStatement ParseDrop() {
         if (IsSymbol(Peek(), "*")) { Advance(); s.select_all = true; }
         else {
             while (true) {
-                s.columns.push_back(ExpectIdentifier("column name or '*'").text);
+                s.columns.push_back(ParseColumnReference());
                 if (IsSymbol(Peek(), ",")) { Advance(); continue; }
                 break;
             }
         }
         ExpectKeyword("FROM");
         s.table = ExpectIdentifier("table name").text;
+        while (IsJoinStart(Peek())) {
+            s.joins.push_back(ParseJoinClause());
+        }
         s.where = ParseOptionalWhere();
         return s;
     }
+
+    static bool IsJoinStart(const Token& token) {
+        return IsKeyword(token, "JOIN") || IsKeyword(token, "INNER") ||
+               IsKeyword(token, "LEFT") || IsKeyword(token, "RIGHT") ||
+               IsKeyword(token, "FULL") || IsKeyword(token, "CROSS");
+    }
+
+    JoinClause ParseJoinClause() {
+        JoinClause join;
+        join.position = Peek().position;
+
+        if (IsKeyword(Peek(), "INNER")) {
+            Advance();
+            join.type = JoinType::INNER;
+            ExpectKeyword("JOIN");
+        } else if (IsKeyword(Peek(), "LEFT")) {
+            Advance();
+            join.type = JoinType::LEFT;
+            if (IsKeyword(Peek(), "OUTER")) Advance();
+            ExpectKeyword("JOIN");
+        } else if (IsKeyword(Peek(), "RIGHT")) {
+            Advance();
+            join.type = JoinType::RIGHT;
+            if (IsKeyword(Peek(), "OUTER")) Advance();
+            ExpectKeyword("JOIN");
+        } else if (IsKeyword(Peek(), "FULL")) {
+            Advance();
+            join.type = JoinType::FULL_OUTER;
+            if (IsKeyword(Peek(), "OUTER")) Advance();
+            ExpectKeyword("JOIN");
+        } else if (IsKeyword(Peek(), "CROSS")) {
+            Advance();
+            join.type = JoinType::CROSS;
+            ExpectKeyword("JOIN");
+        } else {
+            join.type = JoinType::INNER;
+            ExpectKeyword("JOIN");
+        }
+
+        join.table = ExpectIdentifier("joined table name").text;
+        if (join.type == JoinType::CROSS) {
+            if (IsKeyword(Peek(), "ON"))
+                Fail("CROSS JOIN does not accept an ON clause", Peek().position);
+            return join;
+        }
+
+        ExpectKeyword("ON");
+        std::size_t left_position = 0;
+        const std::string left = ParseColumnReference(&left_position);
+        if (Peek().type != TokenType::OPERATOR || Peek().text != "=")
+            Fail("JOIN ON currently supports column equality only", Peek().position);
+        Advance();
+        const std::string right = ParseColumnReference();
+        join.on = JoinCondition{left, right, left_position};
+        return join;
+    }
+
     UpdateStatement ParseUpdate() {
         Advance();
         UpdateStatement s;
@@ -281,9 +352,7 @@ DropTableStatement ParseDrop() {
         }
 
         ConditionPredicate predicate;
-        const Token& column = ExpectIdentifier("column name");
-        predicate.column = column.text;
-        predicate.position = column.position;
+        predicate.column = ParseColumnReference(&predicate.position);
         predicate.negated = negated;
 
         // SQL also permits `column NOT LIKE/IN/BETWEEN ...`.

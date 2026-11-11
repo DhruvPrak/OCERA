@@ -48,8 +48,7 @@ private:
 // Rules:
 //  - Keywords are case-insensitive: select == SELECT.
 //  - String literals use single quotes; write '' inside to mean one quote.
-//  - A '-' followed by a digit is part of an integer only where a value
-//    can begin; after a left-hand operand it is subtraction.
+//  - A '-' immediately followed by a digit is a negative integer.
 std::vector<Token> Tokenize(const std::string& sql);
 
 // Human-readable name of a token type, handy for tests and error messages.

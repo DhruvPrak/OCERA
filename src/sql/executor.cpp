@@ -817,178 +817,200 @@ bool SqlExecutor::ExecuteSelect(
         SetError(error, "query result output pointer is null");
         return false;
     }
+    try { Validate(sql::Statement{statement}, catalog_); }
+    catch (const std::exception& exception) { SetError(error, exception.what()); return false; }
 
-    try {
-        Validate(sql::Statement{statement}, catalog_);
-    } catch (const std::exception& exception) {
-        SetError(error, exception.what());
-        return false;
-    }
+    struct Relation { const TableSchema* schema; std::size_t offset; };
+    std::vector<Relation> relations;
+    std::vector<std::vector<sql::Value>> rows;
+    std::size_t width = 0;
 
-    const TableSchema* schema = catalog_.GetTable(statement.table);
-
-    if (schema == nullptr) {
-        SetError(error, "table '" + statement.table + "' does not exist");
-        return false;
-    }
-
-    const auto table_it =
-        tables_.find(NormalizeIdentifier(statement.table));
-
-    if (table_it == tables_.end() ||
-        table_it->second.record_table == nullptr) {
-        SetError(
-            error,
-            "table '" + statement.table +
-                "' has no runtime storage managed by this SQL executor"
-        );
-        return false;
-    }
-
-    std::vector<std::pair<RID, std::vector<sql::Value>>> stored_rows;
-    bool used_index = false;
-
-    // Use one indexed comparison only when the whole predicate is AND-only.
-    // The complete WHERE expression is still re-evaluated below.
-    const bool index_safe_condition = statement.where.has_value() &&
-        statement.where->predicates.size() ==
-            statement.where->comparisons.size() &&
-        std::all_of(statement.where->predicates.begin(),
-                    statement.where->predicates.end(),
-                    [](const sql::ConditionPredicate& predicate) {
-                        return predicate.type == sql::PredicateType::COMPARISON &&
-                               !predicate.negated;
-                    });
-    if (index_safe_condition &&
-        statement.where->comparisons.size() > 0 &&
-        statement.where->connectors.size() + 1 ==
-            statement.where->comparisons.size()) {
-        const bool has_or = std::find(statement.where->connectors.begin(),
-                                      statement.where->connectors.end(),
-                                      sql::LogicalOp::OR) !=
-                            statement.where->connectors.end();
-        if (!has_or) {
-            for (const auto& comparison : statement.where->comparisons) {
-                if (comparison.value.type != sql::Value::Type::INTEGER) continue;
-                const IndexSchema* metadata =
-                    catalog_.GetIndexForColumn(statement.table, comparison.column);
-                if (metadata == nullptr) continue;
-                const auto tree_it = indexes_.find(
-                    NormalizeIdentifier(metadata->name));
-                if (tree_it == indexes_.end()) continue;
-
-                const auto key = comparison.value.int_value;
-                std::vector<std::pair<BPlusTree::Key, RID>> entries;
-                const auto min_key = std::numeric_limits<BPlusTree::Key>::min();
-                const auto max_key = std::numeric_limits<BPlusTree::Key>::max();
-                switch (comparison.op) {
-                    case sql::CompareOp::EQ:
-                        for (const RID& rid : tree_it->second->SearchAll(key))
-                            entries.emplace_back(key, rid);
-                        break;
-                    case sql::CompareOp::NE:
-                        if (key != min_key) {
-                            auto part = tree_it->second->RangeScan(min_key, key - 1);
-                            entries.insert(entries.end(), part.begin(), part.end());
-                        }
-                        if (key != max_key) {
-                            auto part = tree_it->second->RangeScan(key + 1, max_key);
-                            entries.insert(entries.end(), part.begin(), part.end());
-                        }
-                        break;
-                    case sql::CompareOp::LT:
-                        if (key != min_key)
-                            entries = tree_it->second->RangeScan(min_key, key - 1);
-                        break;
-                    case sql::CompareOp::LE:
-                        entries = tree_it->second->RangeScan(min_key, key);
-                        break;
-                    case sql::CompareOp::GT:
-                        if (key != max_key)
-                            entries = tree_it->second->RangeScan(key + 1, max_key);
-                        break;
-                    case sql::CompareOp::GE:
-                        entries = tree_it->second->RangeScan(key, max_key);
-                        break;
-                }
-
-                bool index_lookup_valid = true;
-                for (const auto& entry : entries) {
-                    std::vector<sql::Value> row;
-                    std::string ignored_error;
-                    if (!table_it->second.record_table->Get(
-                            entry.second, &row, &ignored_error)) {
-                        index_lookup_valid = false;
-                        break;
-                    }
-                    stored_rows.emplace_back(entry.second, std::move(row));
-                }
-                if (!index_lookup_valid) {
-                    // A stale/corrupt RID must never cause rows to disappear.
-                    stored_rows.clear();
-                } else {
-                    used_index = true;
-                }
-                break;
-            }
+    auto scan = [&](const std::string& name,
+                    std::vector<std::vector<sql::Value>>* output) -> bool {
+        const auto it = tables_.find(NormalizeIdentifier(name));
+        if (it == tables_.end() || !it->second.record_table) {
+            SetError(error, "table '" + name + "' has no runtime storage managed by this SQL executor");
+            return false;
         }
-    }
-
-    if (!used_index &&
-        !table_it->second.record_table->Scan(&stored_rows, error)) {
-        return false;
-    }
-
-    try {
-        std::vector<std::size_t> projection;
-
-        if (statement.select_all) {
-            for (std::size_t i = 0; i < schema->columns.size(); ++i) {
-                projection.push_back(i);
-            }
-        } else {
-            for (const auto& name : statement.columns) {
-                const int index = schema->ColumnIndex(name);
-
-                if (index < 0) {
-                    SetError(error, "unknown projected column '" + name + "'");
-                    return false;
-                }
-
-                projection.push_back(static_cast<std::size_t>(index));
-            }
-        }
-
-        QueryResult result;
-
-        for (const std::size_t index : projection) {
-            result.column_names.push_back(schema->columns[index].name);
-        }
-
-        for (const auto& stored : stored_rows) {
-            const auto& row = stored.second;
-
-            if (statement.where.has_value() &&
-                !MatchesCondition(*statement.where, *schema, row)) {
-                continue;
-            }
-
-            std::vector<sql::Value> projected_row;
-            projected_row.reserve(projection.size());
-
-            for (const std::size_t index : projection) {
-                projected_row.push_back(row[index]);
-            }
-
-            result.rows.push_back(std::move(projected_row));
-        }
-
-        *query_result = std::move(result);
+        std::vector<std::pair<RID, std::vector<sql::Value>>> stored;
+        if (!it->second.record_table->Scan(&stored, error)) return false;
+        output->clear(); output->reserve(stored.size());
+        for (auto& item : stored) output->push_back(std::move(item.second));
         return true;
-    } catch (const std::exception& exception) {
-        SetError(error, exception.what());
-        return false;
+    };
+    auto null_row = [](std::size_t count) {
+        std::vector<sql::Value> result(count);
+        for (auto& value : result) value.type = sql::Value::Type::NULL_VALUE;
+        return result;
+    };
+    auto resolve = [&](const std::string& ref, std::size_t* index) -> bool {
+        const auto dot = ref.find('.');
+        const std::string table_name = dot == std::string::npos ? "" : ref.substr(0, dot);
+        const std::string column_name = dot == std::string::npos ? ref : ref.substr(dot + 1);
+        bool found = false;
+        for (const auto& relation : relations) {
+            if (dot != std::string::npos && NormalizeIdentifier(relation.schema->name) != NormalizeIdentifier(table_name)) continue;
+            const int column = relation.schema->ColumnIndex(column_name);
+            if (column < 0) continue;
+            if (found) { SetError(error, "ambiguous column '" + ref + "'"); return false; }
+            *index = relation.offset + static_cast<std::size_t>(column); found = true;
+        }
+        if (!found) SetError(error, "unknown column '" + ref + "'");
+        return found;
+    };
+
+    const TableSchema* base_schema = catalog_.GetTable(statement.table);
+    if (!base_schema) { SetError(error, "table '" + statement.table + "' does not exist"); return false; }
+    relations.push_back({base_schema, 0});
+    width = base_schema->columns.size();
+    if (!scan(statement.table, &rows)) return false;
+
+    for (const auto& join : statement.joins) {
+        const TableSchema* right_schema = catalog_.GetTable(join.table);
+        if (!right_schema) { SetError(error, "table '" + join.table + "' does not exist"); return false; }
+        std::vector<std::vector<sql::Value>> right_rows;
+        if (!scan(join.table, &right_rows)) return false;
+        const std::size_t right_width = right_schema->columns.size();
+        relations.push_back({right_schema, width});
+        std::size_t left_key = 0, right_key = 0;
+        if (join.on) {
+            if (!resolve(join.on->left_column, &left_key) ||
+                !resolve(join.on->right_column, &right_key)) return false;
+
+            // One ON reference must come from the accumulated left side and
+            // the other from the table currently being joined. Accept either
+            // written order, but reject comparisons within only one side.
+            const bool left_to_right = left_key < width &&
+                right_key >= width && right_key < width + right_width;
+            const bool right_to_left = right_key < width &&
+                left_key >= width && left_key < width + right_width;
+            if (!left_to_right && !right_to_left) {
+                SetError(error, "JOIN ON must compare a left-side column with a column from '" +
+                                join.table + "'");
+                return false;
+            }
+        }
+        std::vector<bool> right_matched(right_rows.size(), false);
+        std::vector<std::vector<sql::Value>> joined;
+        for (const auto& left_row : rows) {
+            bool left_matched = false;
+            for (std::size_t r = 0; r < right_rows.size(); ++r) {
+                bool matches = join.type == sql::JoinType::CROSS;
+                if (join.on && left_key < width + right_width &&
+                    right_key < width + right_width) {
+                    const auto get_value = [&](std::size_t idx) -> const sql::Value* {
+                        if (idx < width) return idx < left_row.size() ? &left_row[idx] : nullptr;
+                        const std::size_t ri = idx - width;
+                        return ri < right_rows[r].size() ? &right_rows[r][ri] : nullptr;
+                    };
+                    const sql::Value* a = get_value(left_key);
+                    const sql::Value* b = get_value(right_key);
+                    // ON references are required to compare one existing-side
+                    // column with one column from the newly joined table.
+                    if (a && b && a->type != sql::Value::Type::NULL_VALUE &&
+                        b->type != sql::Value::Type::NULL_VALUE && a->type == b->type)
+                        matches = a->type == sql::Value::Type::INTEGER
+                            ? a->int_value == b->int_value
+                            : a->string_value == b->string_value;
+                }
+                if (matches) {
+                    std::vector<sql::Value> combined = left_row;
+                    combined.insert(combined.end(), right_rows[r].begin(), right_rows[r].end());
+                    joined.push_back(std::move(combined));
+                    left_matched = true; right_matched[r] = true;
+                }
+            }
+            if (!left_matched && (join.type == sql::JoinType::LEFT || join.type == sql::JoinType::FULL_OUTER)) {
+                std::vector<sql::Value> combined = left_row;
+                auto missing = null_row(right_width);
+                combined.insert(combined.end(), missing.begin(), missing.end());
+                joined.push_back(std::move(combined));
+            }
+        }
+        if (join.type == sql::JoinType::RIGHT || join.type == sql::JoinType::FULL_OUTER) {
+            for (std::size_t r = 0; r < right_rows.size(); ++r) {
+                if (right_matched[r]) continue;
+                auto combined = null_row(width);
+                combined.insert(combined.end(), right_rows[r].begin(), right_rows[r].end());
+                joined.push_back(std::move(combined));
+            }
+        }
+        rows = std::move(joined);
+        width += right_width;
     }
+
+    auto value_compare = [](const sql::Value& a, const sql::Value& b, sql::CompareOp op) {
+        if (a.type == sql::Value::Type::NULL_VALUE || b.type == sql::Value::Type::NULL_VALUE || a.type != b.type) return false;
+        int c = a.type == sql::Value::Type::INTEGER
+            ? (a.int_value < b.int_value ? -1 : a.int_value > b.int_value ? 1 : 0)
+            : (a.string_value < b.string_value ? -1 : a.string_value > b.string_value ? 1 : 0);
+        switch (op) { case sql::CompareOp::EQ: return c==0; case sql::CompareOp::NE: return c!=0;
+            case sql::CompareOp::LT: return c<0; case sql::CompareOp::GT: return c>0;
+            case sql::CompareOp::LE: return c<=0; case sql::CompareOp::GE: return c>=0; }
+        return false;
+    };
+    auto condition_matches = [&](const sql::Condition& condition, const std::vector<sql::Value>& row) {
+        if (condition.predicates.empty() || condition.connectors.size()+1 != condition.predicates.size()) return false;
+        auto one = [&](const sql::ConditionPredicate& p) {
+            std::size_t idx=0; if (!resolve(p.column, &idx) || idx >= row.size()) return false;
+            const auto& v=row[idx]; bool m=false;
+            // SQL comparisons against an outer-join NULL are UNKNOWN, so the
+            // row must not pass WHERE (even for a negated predicate).
+            if (v.type == sql::Value::Type::NULL_VALUE &&
+                p.type != sql::PredicateType::IS_NULL) return false;
+            switch(p.type) {
+                case sql::PredicateType::COMPARISON: m=p.values.size()==1 && value_compare(v,p.values[0],p.op); break;
+                case sql::PredicateType::IS_NULL: m=v.type==sql::Value::Type::NULL_VALUE; break;
+                case sql::PredicateType::LIKE:
+                    if (v.type==sql::Value::Type::STRING && p.values.size()==1 && p.values[0].type==sql::Value::Type::STRING)
+                        m=LikeMatches(v.string_value,p.values[0].string_value);
+                    break;
+                case sql::PredicateType::IN: {
+                    for (const auto& x : p.values) {
+                        if (v.type != sql::Value::Type::NULL_VALUE && ValuesEqual(v, x)) {
+                            m = true;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                case sql::PredicateType::BETWEEN:
+                    m=p.values.size()==2 && value_compare(v,p.values[0],sql::CompareOp::GE) && value_compare(v,p.values[1],sql::CompareOp::LE); break;
+            }
+            return p.negated ? !m : m;
+        };
+        bool group=true, result=false;
+        for(std::size_t i=0;i<condition.predicates.size();++i) {
+            group=group && one(condition.predicates[i]);
+            if(i+1==condition.predicates.size() || condition.connectors[i]==sql::LogicalOp::OR) {result=result||group;group=true;}
+        }
+        return result;
+    };
+
+    QueryResult result;
+    std::vector<std::size_t> projection;
+    if (statement.select_all) {
+        for (std::size_t i=0;i<width;++i) projection.push_back(i);
+    } else {
+        for (const auto& name : statement.columns) { std::size_t idx=0; if(!resolve(name,&idx)) return false; projection.push_back(idx); }
+    }
+    for (std::size_t idx : projection) {
+        std::string name;
+        for (const auto& relation : relations) {
+            if (idx >= relation.offset && idx < relation.offset + relation.schema->columns.size()) {
+                name = relation.schema->columns[idx-relation.offset].name; break;
+            }
+        }
+        result.column_names.push_back(name);
+    }
+    for (const auto& row : rows) {
+        if (statement.where && !condition_matches(*statement.where,row)) continue;
+        std::vector<sql::Value> projected; projected.reserve(projection.size());
+        for (std::size_t idx : projection) projected.push_back(row[idx]);
+        result.rows.push_back(std::move(projected));
+    }
+    *query_result = std::move(result);
+    return true;
 }
 
 bool SqlExecutor::ExecuteUpdate(

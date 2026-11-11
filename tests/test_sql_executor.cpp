@@ -674,6 +674,148 @@ assert(catalog.HasIndex("idx_empty_id"));
             "SELECT id FROM condition_rows;", nullptr, &error, &result));
         assert(result.rows.size() == 1 && SameValue(result.rows[0][0], Int(2)));
 
+        std::cout << "[34] INNER JOIN returns only matching rows\n";
+        assert(executor.Execute(
+            "CREATE TABLE departments (dept_id INT, dept_name TEXT);", nullptr, &error));
+        assert(executor.Execute(
+            "CREATE TABLE employees (emp_id INT, emp_name TEXT, dept_id INT);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO departments VALUES (10, 'Engineering');", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO departments VALUES (20, 'Sales');", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO departments VALUES (30, 'HR');", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO employees VALUES (1, 'Alice', 10);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO employees VALUES (2, 'Bob', 20);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO employees VALUES (3, 'Cara', 99);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO employees VALUES (4, 'Dan', 10);", nullptr, &error));
+
+        assert(executor.Execute(
+            "SELECT employees.emp_name, departments.dept_name "
+            "FROM employees INNER JOIN departments "
+            "ON employees.dept_id = departments.dept_id;",
+            nullptr, &error, &result));
+        assert(result.column_names.size() == 2);
+        assert(result.rows.size() == 3);
+        assert(SameValue(result.rows[0][0], Text("Alice")));
+        assert(SameValue(result.rows[0][1], Text("Engineering")));
+        assert(SameValue(result.rows[1][0], Text("Bob")));
+        assert(SameValue(result.rows[1][1], Text("Sales")));
+        assert(SameValue(result.rows[2][0], Text("Dan")));
+
+        std::cout << "[35] LEFT JOIN keeps unmatched left rows as NULL\n";
+        assert(executor.Execute(
+            "SELECT employees.emp_name, departments.dept_name "
+            "FROM employees LEFT JOIN departments "
+            "ON employees.dept_id = departments.dept_id;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 4);
+        assert(SameValue(result.rows[2][0], Text("Cara")));
+        assert(result.rows[2][1].type == sql::Value::Type::NULL_VALUE);
+
+        std::cout << "[36] RIGHT JOIN keeps unmatched right rows as NULL\n";
+        assert(executor.Execute(
+            "SELECT employees.emp_name, departments.dept_name "
+            "FROM employees RIGHT JOIN departments "
+            "ON employees.dept_id = departments.dept_id;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 4);
+        assert(result.rows.back()[0].type == sql::Value::Type::NULL_VALUE);
+        assert(SameValue(result.rows.back()[1], Text("HR")));
+
+        std::cout << "[37] FULL OUTER JOIN keeps unmatched rows on both sides\n";
+        assert(executor.Execute(
+            "SELECT employees.emp_name, departments.dept_name "
+            "FROM employees FULL OUTER JOIN departments "
+            "ON employees.dept_id = departments.dept_id;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 5);
+        bool found_left_only = false;
+        bool found_right_only = false;
+        for (const auto& row : result.rows) {
+            if (SameValue(row[0], Text("Cara")) &&
+                row[1].type == sql::Value::Type::NULL_VALUE) found_left_only = true;
+            if (row[0].type == sql::Value::Type::NULL_VALUE &&
+                SameValue(row[1], Text("HR"))) found_right_only = true;
+        }
+        assert(found_left_only && found_right_only);
+
+        std::cout << "[38] CROSS JOIN returns the Cartesian product\n";
+        assert(executor.Execute(
+            "SELECT employees.emp_id, departments.dept_id "
+            "FROM employees CROSS JOIN departments;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 12);
+
+        std::cout << "[39] JOIN accepts reversed ON column order\n";
+        assert(executor.Execute(
+            "SELECT employees.emp_name FROM employees JOIN departments "
+            "ON departments.dept_id = employees.dept_id;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 3);
+
+        std::cout << "[40] WHERE can select NULLs produced by an outer JOIN\n";
+        assert(executor.Execute(
+            "SELECT employees.emp_name FROM employees LEFT JOIN departments "
+            "ON employees.dept_id = departments.dept_id "
+            "WHERE departments.dept_name IS NULL;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Text("Cara")));
+
+        std::cout << "[41] Ambiguous unqualified JOIN columns are rejected\n";
+        assert(!executor.Execute(
+            "SELECT dept_id FROM employees JOIN departments "
+            "ON employees.dept_id = departments.dept_id;",
+            nullptr, &error, &result));
+        assert(!error.empty());
+
+        std::cout << "[42] JOIN ON must connect the accumulated side to the new table\n";
+        assert(!executor.Execute(
+            "SELECT employees.emp_name FROM employees JOIN departments "
+            "ON employees.emp_id = employees.dept_id;",
+            nullptr, &error, &result));
+        assert(!error.empty());
+
+        std::cout << "[43] Chained JOIN can reference an earlier joined table\n";
+        assert(executor.Execute(
+            "CREATE TABLE dept_regions (dept_id INT, region TEXT);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO dept_regions VALUES (10, 'North');", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO dept_regions VALUES (20, 'South');", nullptr, &error));
+        assert(executor.Execute(
+            "SELECT employees.emp_name, dept_regions.region "
+            "FROM employees "
+            "JOIN departments ON employees.dept_id = departments.dept_id "
+            "JOIN dept_regions ON departments.dept_id = dept_regions.dept_id;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 3);
+        assert(SameValue(result.rows[0][1], Text("North")));
+        assert(SameValue(result.rows[1][1], Text("South")));
+        assert(SameValue(result.rows[2][1], Text("North")));
+
+        std::cout << "[44] JOIN can resolve a key near the end of a wider right table\n";
+        assert(executor.Execute(
+            "CREATE TABLE one_column (id INT);", nullptr, &error));
+        assert(executor.Execute(
+            "CREATE TABLE wide_table (first_value INT, second_value INT, id INT);",
+            nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO one_column VALUES (5);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO wide_table VALUES (100, 200, 5);", nullptr, &error));
+        assert(executor.Execute(
+            "SELECT one_column.id FROM one_column JOIN wide_table "
+            "ON one_column.id = wide_table.id;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Int(5)));
+
         bpm.FlushAllPages();
     }
 

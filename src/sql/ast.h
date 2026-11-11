@@ -12,7 +12,7 @@ namespace sql {
 enum class ColumnType { INT, TEXT };
 
 struct Value {
-    enum class Type { INTEGER, STRING };
+    enum class Type { INTEGER, STRING, NULL_VALUE };
     Type type = Type::INTEGER;
     std::int64_t int_value = 0;
     std::string string_value;
@@ -93,10 +93,29 @@ struct InsertStatement {
     std::vector<Value> values;
 };
 
+enum class JoinType { INNER, LEFT, RIGHT, FULL_OUTER, CROSS };
+
+// The first implementation deliberately supports a single equality between
+// two column references in JOIN ... ON. More general expressions can be added
+// without changing the join tree representation.
+struct JoinCondition {
+    std::string left_column;
+    std::string right_column;
+    std::size_t position = 0;
+};
+
+struct JoinClause {
+    JoinType type = JoinType::INNER;
+    std::string table;
+    std::optional<JoinCondition> on;
+    std::size_t position = 0;
+};
+
 struct SelectStatement {
     std::string table;
     bool select_all = false;
     std::vector<std::string> columns;
+    std::vector<JoinClause> joins;
     std::optional<Condition> where;
 };
 
