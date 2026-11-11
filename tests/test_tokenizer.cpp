@@ -6,172 +6,286 @@
 
 using namespace ocera::sql;
 
-static int g_failures = 0;
+namespace {
 
-static void Check(bool cond, const std::string& what) {
-    if (!cond) {
-        std::cout << "    FAILED: " << what << "\n";
+int g_failures = 0;
+
+void Check(bool condition, const std::string& message) {
+    if (!condition) {
+        std::cout << "    FAILED: " << message << '\n';
         ++g_failures;
     }
 }
 
-// Compares the token stream to expected (type, text) pairs; END_OF_INPUT is
-// checked automatically as the last token.
-struct Expect {
+struct ExpectedToken {
     TokenType type;
     std::string text;
 };
 
-static void CheckTokens(const std::string& sql, const std::vector<Expect>& expected) {
-    std::vector<Token> toks = Tokenize(sql);
-    Check(toks.size() == expected.size() + 1,
-          "token count for: " + sql + " (got " + std::to_string(toks.size() - 1) +
-              ", expected " + std::to_string(expected.size()) + ")");
-    if (toks.size() != expected.size() + 1) return;
-    for (std::size_t i = 0; i < expected.size(); ++i) {
-        Check(toks[i].type == expected[i].type &&
-                  toks[i].text == expected[i].text,
-              "token " + std::to_string(i) + " of: " + sql + " (got " +
-                  TokenTypeName(toks[i].type) + " '" + toks[i].text + "')");
+void CheckTokens(const std::string& sql,
+                 const std::vector<ExpectedToken>& expected,
+                 const std::string& test_name) {
+    try {
+        const std::vector<Token> actual = Tokenize(sql);
+        Check(actual.size() == expected.size() + 1,
+              test_name + ": token count (expected " +
+                  std::to_string(expected.size()) + ", got " +
+                  std::to_string(actual.empty() ? 0 : actual.size() - 1) + ")");
+
+        const std::size_t comparable =
+            actual.size() < expected.size() ? actual.size() : expected.size();
+        for (std::size_t i = 0; i < comparable; ++i) {
+            Check(actual[i].type == expected[i].type &&
+                      actual[i].text == expected[i].text,
+                  test_name + ": token " + std::to_string(i) +
+                      " expected " + TokenTypeName(expected[i].type) +
+                      " '" + expected[i].text + "', got " +
+                      TokenTypeName(actual[i].type) + " '" + actual[i].text + "'");
+        }
+
+        if (!actual.empty()) {
+            Check(actual.back().type == TokenType::END_OF_INPUT,
+                  test_name + ": final token is END_OF_INPUT");
+            Check(actual.back().position == sql.size(),
+                  test_name + ": END_OF_INPUT position equals SQL length");
+        }
+    } catch (const std::exception& error) {
+        Check(false, test_name + ": unexpected exception: " + error.what());
     }
-    Check(toks.back().type == TokenType::END_OF_INPUT, "ends with END_OF_INPUT");
 }
 
-static bool Throws(const std::string& sql, std::size_t* pos = nullptr) {
+bool ThrowsTokenizerError(const std::string& sql,
+                          std::size_t* error_position = nullptr) {
     try {
-        Tokenize(sql);
-    } catch (const TokenizerError& e) {
-        if (pos) *pos = e.position();
+        (void)Tokenize(sql);
+    } catch (const TokenizerError& error) {
+        if (error_position != nullptr) {
+            *error_position = error.position();
+        }
         return true;
+    } catch (...) {
+        return false;
     }
     return false;
 }
 
-static void Report(const char* name, int failures_before) {
-    std::cout << (g_failures == failures_before ? "    PASSED: " : "    (see failures above) ")
-              << name << "\n";
+void Report(const char* name, int failures_before) {
+    std::cout << (g_failures == failures_before ? "    PASSED: " : "    FAILED: ")
+              << name << '\n';
 }
 
+}  // namespace
+
 int main() {
-    std::cout << "=== OCERA SQL Tokenizer Test ===\n\n";
     using T = TokenType;
-    int before;
+    int before = g_failures;
 
-    std::cout << "[1] Basic SELECT statement\n";
-    before = g_failures;
-    CheckTokens("SELECT name FROM students WHERE id = 5;",
-                {{T::KEYWORD, "SELECT"}, {T::IDENTIFIER, "name"}, {T::KEYWORD, "FROM"},
-                 {T::IDENTIFIER, "students"}, {T::KEYWORD, "WHERE"}, {T::IDENTIFIER, "id"},
-                 {T::OPERATOR, "="}, {T::INTEGER, "5"}, {T::SYMBOL, ";"}});
-    Report("basic SELECT", before);
+    std::cout << "=== OCERA SQL Tokenizer Tests ===\n\n";
 
-    std::cout << "[2] Keywords are case-insensitive, identifiers keep their case\n";
+    std::cout << "[1] Existing SQL statements remain tokenized correctly\n";
     before = g_failures;
-    CheckTokens("sElEcT Name fRoM T",
-                {{T::KEYWORD, "SELECT"}, {T::IDENTIFIER, "Name"}, {T::KEYWORD, "FROM"},
-                 {T::IDENTIFIER, "T"}});
-    Report("case handling", before);
+    CheckTokens(
+        "SELECT name FROM students WHERE id = 5;",
+        {{T::KEYWORD, "SELECT"}, {T::IDENTIFIER, "name"},
+         {T::KEYWORD, "FROM"}, {T::IDENTIFIER, "students"},
+         {T::KEYWORD, "WHERE"}, {T::IDENTIFIER, "id"},
+         {T::OPERATOR, "="}, {T::INTEGER, "5"}, {T::SYMBOL, ";"}},
+        "basic SELECT");
+    CheckTokens(
+        "CREATE TABLE t (id INT, name TEXT);",
+        {{T::KEYWORD, "CREATE"}, {T::KEYWORD, "TABLE"},
+         {T::IDENTIFIER, "t"}, {T::SYMBOL, "("},
+         {T::IDENTIFIER, "id"}, {T::KEYWORD, "INT"},
+         {T::SYMBOL, ","}, {T::IDENTIFIER, "name"},
+         {T::KEYWORD, "TEXT"}, {T::SYMBOL, ")"}, {T::SYMBOL, ";"}},
+        "CREATE TABLE");
+    CheckTokens(
+        "INSERT INTO t VALUES (1, 'Asha');",
+        {{T::KEYWORD, "INSERT"}, {T::KEYWORD, "INTO"},
+         {T::IDENTIFIER, "t"}, {T::KEYWORD, "VALUES"},
+         {T::SYMBOL, "("}, {T::INTEGER, "1"}, {T::SYMBOL, ","},
+         {T::STRING, "Asha"}, {T::SYMBOL, ")"}, {T::SYMBOL, ";"}},
+        "INSERT");
+    CheckTokens(
+        "CREATE INDEX idx_age ON students (age);",
+        {{T::KEYWORD, "CREATE"}, {T::KEYWORD, "INDEX"},
+         {T::IDENTIFIER, "idx_age"}, {T::KEYWORD, "ON"},
+         {T::IDENTIFIER, "students"}, {T::SYMBOL, "("},
+         {T::IDENTIFIER, "age"}, {T::SYMBOL, ")"}, {T::SYMBOL, ";"}},
+        "CREATE INDEX");
+    Report("existing SQL statements", before);
 
-    std::cout << "[3] CREATE TABLE and INSERT\n";
+    std::cout << "[2] Phase 3 arithmetic and comparison operators\n";
     before = g_failures;
-    CheckTokens("CREATE TABLE t (id INT, name TEXT);",
-                {{T::KEYWORD, "CREATE"}, {T::KEYWORD, "TABLE"}, {T::IDENTIFIER, "t"},
-                 {T::SYMBOL, "("}, {T::IDENTIFIER, "id"}, {T::KEYWORD, "INT"}, {T::SYMBOL, ","},
-                 {T::IDENTIFIER, "name"}, {T::KEYWORD, "TEXT"}, {T::SYMBOL, ")"}, {T::SYMBOL, ";"}});
-    CheckTokens("INSERT INTO t VALUES (1, 'Asha');",
-                {{T::KEYWORD, "INSERT"}, {T::KEYWORD, "INTO"}, {T::IDENTIFIER, "t"},
-                 {T::KEYWORD, "VALUES"}, {T::SYMBOL, "("}, {T::INTEGER, "1"}, {T::SYMBOL, ","},
-                 {T::STRING, "Asha"}, {T::SYMBOL, ")"}, {T::SYMBOL, ";"}});
-    CheckTokens("CREATE INDEX idx_age ON students (age);",
-                {{T::KEYWORD, "CREATE"}, {T::KEYWORD, "INDEX"},
-                 {T::IDENTIFIER, "idx_age"}, {T::KEYWORD, "ON"},
-                 {T::IDENTIFIER, "students"}, {T::SYMBOL, "("},
-                 {T::IDENTIFIER, "age"}, {T::SYMBOL, ")"}, {T::SYMBOL, ";"}});
-    CheckTokens("create index IDX on T (A)",
-                {{T::KEYWORD, "CREATE"}, {T::KEYWORD, "INDEX"},
-                 {T::IDENTIFIER, "IDX"}, {T::KEYWORD, "ON"},
-                 {T::IDENTIFIER, "T"}, {T::SYMBOL, "("},
-                 {T::IDENTIFIER, "A"}, {T::SYMBOL, ")"}});
-    CheckTokens("PRIMARY KEY UNIQUE",
-                {{T::KEYWORD, "PRIMARY"}, {T::KEYWORD, "KEY"},
-                 {T::KEYWORD, "UNIQUE"}});
-    Report("CREATE / INSERT / INDEX / KEYWORDS", before);
+    CheckTokens(
+        "a = 1 a != 2 a <> 3 a < 4 a > 5 a <= 6 a >= 7",
+        {{T::IDENTIFIER, "a"}, {T::OPERATOR, "="}, {T::INTEGER, "1"},
+         {T::IDENTIFIER, "a"}, {T::OPERATOR, "!="}, {T::INTEGER, "2"},
+         {T::IDENTIFIER, "a"}, {T::OPERATOR, "<>"}, {T::INTEGER, "3"},
+         {T::IDENTIFIER, "a"}, {T::OPERATOR, "<"}, {T::INTEGER, "4"},
+         {T::IDENTIFIER, "a"}, {T::OPERATOR, ">"}, {T::INTEGER, "5"},
+         {T::IDENTIFIER, "a"}, {T::OPERATOR, "<="}, {T::INTEGER, "6"},
+         {T::IDENTIFIER, "a"}, {T::OPERATOR, ">="}, {T::INTEGER, "7"}},
+        "comparison operators");
+    CheckTokens(
+        "price + tax - discount / quantity % 2",
+        {{T::IDENTIFIER, "price"}, {T::OPERATOR, "+"},
+         {T::IDENTIFIER, "tax"}, {T::OPERATOR, "-"},
+         {T::IDENTIFIER, "discount"}, {T::OPERATOR, "/"},
+         {T::IDENTIFIER, "quantity"}, {T::OPERATOR, "%"},
+         {T::INTEGER, "2"}},
+        "arithmetic operators");
+    CheckTokens(
+        "SELECT * FROM products WHERE price = -7 AND quantity = 1-2",
+        {{T::KEYWORD, "SELECT"}, {T::SYMBOL, "*"},
+         {T::KEYWORD, "FROM"}, {T::IDENTIFIER, "products"},
+         {T::KEYWORD, "WHERE"}, {T::IDENTIFIER, "price"},
+         {T::OPERATOR, "="}, {T::INTEGER, "-7"},
+         {T::KEYWORD, "AND"}, {T::IDENTIFIER, "quantity"},
+         {T::OPERATOR, "="}, {T::INTEGER, "1"},
+         {T::OPERATOR, "-"}, {T::INTEGER, "2"}},
+        "unary minus, subtraction and SELECT star");
+    Report("arithmetic and comparison operators", before);
 
-    std::cout << "[4] UPDATE, DELETE, AND/OR, star\n";
+    std::cout << "[3] Phase 3 condition, join, clause and function keywords\n";
     before = g_failures;
-    CheckTokens("UPDATE t SET a = 1 WHERE b = 2 AND c = 3 OR d = 4",
-                {{T::KEYWORD, "UPDATE"}, {T::IDENTIFIER, "t"}, {T::KEYWORD, "SET"},
-                 {T::IDENTIFIER, "a"}, {T::OPERATOR, "="}, {T::INTEGER, "1"},
-                 {T::KEYWORD, "WHERE"}, {T::IDENTIFIER, "b"}, {T::OPERATOR, "="}, {T::INTEGER, "2"},
-                 {T::KEYWORD, "AND"}, {T::IDENTIFIER, "c"}, {T::OPERATOR, "="}, {T::INTEGER, "3"},
-                 {T::KEYWORD, "OR"}, {T::IDENTIFIER, "d"}, {T::OPERATOR, "="}, {T::INTEGER, "4"}});
-    CheckTokens("DELETE FROM t", {{T::KEYWORD, "DELETE"}, {T::KEYWORD, "FROM"}, {T::IDENTIFIER, "t"}});
-    CheckTokens("SELECT * FROM t", {{T::KEYWORD, "SELECT"}, {T::SYMBOL, "*"},
-                                    {T::KEYWORD, "FROM"}, {T::IDENTIFIER, "t"}});
-    Report("UPDATE / DELETE / AND / OR / *", before);
+    CheckTokens(
+        "NOT IS NULL LIKE IN BETWEEN JOIN INNER LEFT RIGHT FULL OUTER CROSS NATURAL USING",
+        {{T::KEYWORD, "NOT"}, {T::KEYWORD, "IS"}, {T::KEYWORD, "NULL"},
+         {T::KEYWORD, "LIKE"}, {T::KEYWORD, "IN"}, {T::KEYWORD, "BETWEEN"},
+         {T::KEYWORD, "JOIN"}, {T::KEYWORD, "INNER"}, {T::KEYWORD, "LEFT"},
+         {T::KEYWORD, "RIGHT"}, {T::KEYWORD, "FULL"}, {T::KEYWORD, "OUTER"},
+         {T::KEYWORD, "CROSS"}, {T::KEYWORD, "NATURAL"}, {T::KEYWORD, "USING"}},
+        "conditions and joins");
+    CheckTokens(
+        "AS ORDER BY ASC DESC LIMIT OFFSET DISTINCT GROUP HAVING",
+        {{T::KEYWORD, "AS"}, {T::KEYWORD, "ORDER"}, {T::KEYWORD, "BY"},
+         {T::KEYWORD, "ASC"}, {T::KEYWORD, "DESC"}, {T::KEYWORD, "LIMIT"},
+         {T::KEYWORD, "OFFSET"}, {T::KEYWORD, "DISTINCT"},
+         {T::KEYWORD, "GROUP"}, {T::KEYWORD, "HAVING"}},
+        "query clauses");
+    CheckTokens(
+        "COUNT SUM AVG MIN MAX CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP",
+        {{T::KEYWORD, "COUNT"}, {T::KEYWORD, "SUM"}, {T::KEYWORD, "AVG"},
+         {T::KEYWORD, "MIN"}, {T::KEYWORD, "MAX"},
+         {T::KEYWORD, "CURRENT_DATE"}, {T::KEYWORD, "CURRENT_TIME"},
+         {T::KEYWORD, "CURRENT_TIMESTAMP"}},
+        "aggregate and date-time keywords");
+    CheckTokens(
+        "CASE WHEN THEN ELSE END",
+        {{T::KEYWORD, "CASE"}, {T::KEYWORD, "WHEN"},
+         {T::KEYWORD, "THEN"}, {T::KEYWORD, "ELSE"}, {T::KEYWORD, "END"}},
+        "conditional expression keywords");
+    Report("Phase 3 keyword vocabulary", before);
 
-    std::cout << "[5] All comparison operators (including two-character ones)\n";
+    std::cout << "[4] Keywords are case-insensitive; identifiers preserve case\n";
     before = g_failures;
-    CheckTokens("a=1 a!=1 a<1 a>1 a<=1 a>=1",
-                {{T::IDENTIFIER, "a"}, {T::OPERATOR, "="}, {T::INTEGER, "1"},
-                 {T::IDENTIFIER, "a"}, {T::OPERATOR, "!="}, {T::INTEGER, "1"},
-                 {T::IDENTIFIER, "a"}, {T::OPERATOR, "<"}, {T::INTEGER, "1"},
-                 {T::IDENTIFIER, "a"}, {T::OPERATOR, ">"}, {T::INTEGER, "1"},
-                 {T::IDENTIFIER, "a"}, {T::OPERATOR, "<="}, {T::INTEGER, "1"},
-                 {T::IDENTIFIER, "a"}, {T::OPERATOR, ">="}, {T::INTEGER, "1"}});
-    Report("operators", before);
+    CheckTokens(
+        "sElEcT Name fRoM Students wHeRe value bEtWeEn 1 aNd 9",
+        {{T::KEYWORD, "SELECT"}, {T::IDENTIFIER, "Name"},
+         {T::KEYWORD, "FROM"}, {T::IDENTIFIER, "Students"},
+         {T::KEYWORD, "WHERE"}, {T::IDENTIFIER, "value"},
+         {T::KEYWORD, "BETWEEN"}, {T::INTEGER, "1"},
+         {T::KEYWORD, "AND"}, {T::INTEGER, "9"}},
+        "case handling");
+    CheckTokens(
+        "selection order_by student_1 _private",
+        {{T::IDENTIFIER, "selection"}, {T::IDENTIFIER, "order_by"},
+         {T::IDENTIFIER, "student_1"}, {T::IDENTIFIER, "_private"}},
+        "keyword prefixes and identifiers");
+    Report("case handling and identifiers", before);
 
-    std::cout << "[6] Integers: zero, large, negative\n";
+    std::cout << "[5] Strings, escaped quotes and punctuation\n";
     before = g_failures;
-    CheckTokens("0 12345 -7", {{T::INTEGER, "0"}, {T::INTEGER, "12345"}, {T::INTEGER, "-7"}});
-    Report("integers", before);
+    CheckTokens("'' 'hello world' 'it''s' 'SELECT FROM'",
+                {{T::STRING, ""}, {T::STRING, "hello world"},
+                 {T::STRING, "it's"}, {T::STRING, "SELECT FROM"}},
+                "string literals");
+    CheckTokens("(a,b); *",
+                {{T::SYMBOL, "("}, {T::IDENTIFIER, "a"}, {T::SYMBOL, ","},
+                 {T::IDENTIFIER, "b"}, {T::SYMBOL, ")"}, {T::SYMBOL, ";"},
+                 {T::SYMBOL, "*"}},
+                "punctuation and star");
+    Report("strings and punctuation", before);
 
-    std::cout << "[7] Strings: empty, spaces, escaped quote, keyword inside string\n";
+    std::cout << "[6] SQL single-line comments\n";
     before = g_failures;
-    CheckTokens("''", {{T::STRING, ""}});
-    CheckTokens("'hello world'", {{T::STRING, "hello world"}});
-    CheckTokens("'it''s'", {{T::STRING, "it's"}});
-    CheckTokens("'SELECT FROM'", {{T::STRING, "SELECT FROM"}});
-    Report("strings", before);
+    CheckTokens("SELECT -- ignore this text\nname FROM students",
+                {{T::KEYWORD, "SELECT"}, {T::IDENTIFIER, "name"},
+                 {T::KEYWORD, "FROM"}, {T::IDENTIFIER, "students"}},
+                "comment before newline");
+    CheckTokens("SELECT 1; -- trailing comment",
+                {{T::KEYWORD, "SELECT"}, {T::INTEGER, "1"}, {T::SYMBOL, ";"}},
+                "trailing comment");
+    CheckTokens("-- comment only\r\nSELECT 2",
+                {{T::KEYWORD, "SELECT"}, {T::INTEGER, "2"}},
+                "CRLF comment");
+    CheckTokens("SELECT '--not a comment'",
+                {{T::KEYWORD, "SELECT"}, {T::STRING, "--not a comment"}},
+                "comment marker inside string");
+    Report("single-line comments", before);
 
-    std::cout << "[8] Whitespace variety and empty input\n";
+    std::cout << "[7] Signed integers and subtraction boundaries\n";
     before = g_failures;
-    CheckTokens("  SELECT\n\t*\r\nFROM   t  ", {{T::KEYWORD, "SELECT"}, {T::SYMBOL, "*"},
-                                                {T::KEYWORD, "FROM"}, {T::IDENTIFIER, "t"}});
-    CheckTokens("", {});
-    CheckTokens("   ", {});
-    Report("whitespace / empty", before);
+    // A leading minus is unary only when no left-hand operand exists.
+    // After an integer, '-' is necessarily the subtraction operator.
+    CheckTokens("-7", {{T::INTEGER, "-7"}},
+                "negative integer at expression start");
+    CheckTokens("0 12345", {{T::INTEGER, "0"}, {T::INTEGER, "12345"}},
+                "positive integers separated by whitespace");
+    CheckTokens("0 - 7", {{T::INTEGER, "0"}, {T::OPERATOR, "-"},
+                          {T::INTEGER, "7"}},
+                "whitespace-separated subtraction");
+    CheckTokens("a-7 7-2 a = -12 ( -3, 4 )",
+                {{T::IDENTIFIER, "a"}, {T::OPERATOR, "-"}, {T::INTEGER, "7"},
+                 {T::INTEGER, "7"}, {T::OPERATOR, "-"}, {T::INTEGER, "2"},
+                 {T::IDENTIFIER, "a"}, {T::OPERATOR, "="}, {T::INTEGER, "-12"},
+                 {T::SYMBOL, "("}, {T::INTEGER, "-3"}, {T::SYMBOL, ","},
+                 {T::INTEGER, "4"}, {T::SYMBOL, ")"}},
+                "negative literals versus subtraction");
+    Report("signed integers", before);
 
-    std::cout << "[9] Identifiers with underscores and digits; keyword prefix is not a keyword\n";
+    std::cout << "[8] Whitespace, empty input and token positions\n";
     before = g_failures;
-    CheckTokens("_x student_1 selection",
-                {{T::IDENTIFIER, "_x"}, {T::IDENTIFIER, "student_1"}, {T::IDENTIFIER, "selection"}});
-    Report("identifiers", before);
-
-    std::cout << "[10] Token positions\n";
-    before = g_failures;
+    CheckTokens("  SELECT\n\t*\r\nFROM   t  ",
+                {{T::KEYWORD, "SELECT"}, {T::SYMBOL, "*"},
+                 {T::KEYWORD, "FROM"}, {T::IDENTIFIER, "t"}},
+                "mixed whitespace");
+    CheckTokens("", {}, "empty input");
+    CheckTokens("   \n\t", {}, "whitespace-only input");
     {
-        std::vector<Token> toks = Tokenize("ab  = 'x'");
-        Check(toks[0].position == 0, "ab at 0");
-        Check(toks[1].position == 4, "= at 4");
-        Check(toks[2].position == 6, "string at 6");
+        const std::vector<Token> tokens = Tokenize("ab  = 'x'");
+        Check(tokens.size() == 4, "positions: three tokens plus EOF");
+        if (tokens.size() == 4) {
+            Check(tokens[0].position == 0, "positions: identifier starts at 0");
+            Check(tokens[1].position == 4, "positions: operator starts at 4");
+            Check(tokens[2].position == 6, "positions: string starts at 6");
+            Check(tokens[3].position == 9, "positions: EOF is at input length");
+        }
     }
-    Report("positions", before);
+    Report("whitespace, empty input and positions", before);
 
-    std::cout << "[11] Errors are reported, not silently accepted\n";
+    std::cout << "[9] Invalid input reports lexical errors at the right position\n";
     before = g_failures;
-    std::size_t pos = 0;
-    Check(Throws("SELECT 'abc", &pos) && pos == 7, "unterminated string, position 7");
-    Check(Throws("SELECT @ FROM t", &pos) && pos == 7, "unknown character '@', position 7");
-    Check(Throws("a ! b", &pos) && pos == 2, "lone '!' rejected");
-    Check(Throws("12abc", &pos) && pos == 0, "digits followed by letters rejected");
-    Check(Throws("SELECT #"), "unknown character '#'");
-    Report("error cases", before);
+    std::size_t position = 0;
+    Check(ThrowsTokenizerError("SELECT 'abc", &position) && position == 7,
+          "unterminated string at opening quote");
+    Check(ThrowsTokenizerError("SELECT @ FROM t", &position) && position == 7,
+          "unknown character position");
+    Check(ThrowsTokenizerError("a ! b", &position) && position == 2,
+          "lone exclamation mark rejected");
+    Check(ThrowsTokenizerError("12abc", &position) && position == 0,
+          "digits followed by identifier rejected");
+    Check(ThrowsTokenizerError("SELECT #"), "unknown hash character rejected");
+    Check(ThrowsTokenizerError("SELECT 1.5", &position) && position == 8,
+          "decimal point rejected until decimal literals are implemented");
+    Report("lexical error handling", before);
 
     if (g_failures == 0) {
         std::cout << "\nAll tokenizer tests passed.\n";
         return 0;
     }
-    std::cout << "\n" << g_failures << " tokenizer check(s) FAILED.\n";
+
+    std::cout << "\n" << g_failures << " tokenizer check(s) failed.\n";
     return 1;
 }
