@@ -306,11 +306,78 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
             CheckValueType(table.columns[i], s->values[i], At(s->values[i].position));
         }
     } else if (const auto* s = std::get_if<sql::SelectStatement>(&stmt)) {
-        const TableSchema& table = RequireTable(catalog, s->table);
-        if (!s->select_all) {
-            for (const auto& name : s->columns) RequireColumn(table, name, "");
+        std::vector<const TableSchema*> tables;
+        tables.push_back(&RequireTable(catalog, s->table));
+        for (const auto& join : s->joins)
+            tables.push_back(&RequireTable(catalog, join.table));
+
+        auto resolve = [&](const std::string& reference) -> const ColumnSchema* {
+            const auto dot = reference.find('.');
+            if (dot != std::string::npos) {
+                const std::string table_name = reference.substr(0, dot);
+                const std::string column_name = reference.substr(dot + 1);
+                for (const auto* table : tables) {
+                    if (NormalizeIdentifier(table->name) == NormalizeIdentifier(table_name)) {
+                        const int index = table->ColumnIndex(column_name);
+                        if (index >= 0) return &table->columns[static_cast<std::size_t>(index)];
+                        throw SemanticError("table '" + table_name + "' has no column '" + column_name + "'");
+                    }
+                }
+                throw SemanticError("unknown table qualifier '" + table_name + "'");
+            }
+            const ColumnSchema* found = nullptr;
+            for (const auto* table : tables) {
+                const int index = table->ColumnIndex(reference);
+                if (index >= 0) {
+                    if (found != nullptr)
+                        throw SemanticError("ambiguous column '" + reference + "'");
+                    found = &table->columns[static_cast<std::size_t>(index)];
+                }
+            }
+            if (!found) throw SemanticError("unknown column '" + reference + "'");
+            return found;
+        };
+
+        for (const auto& join : s->joins) {
+            if (join.type == sql::JoinType::CROSS) {
+                if (join.on) throw SemanticError("CROSS JOIN must not have an ON clause");
+            } else if (!join.on) {
+                throw SemanticError("JOIN requires an ON clause");
+            } else {
+                const auto* left = resolve(join.on->left_column);
+                const auto* right = resolve(join.on->right_column);
+                if (left->type != right->type)
+                    throw SemanticError("JOIN columns must have matching data types");
+            }
         }
-        CheckOptionalCondition(s->where, table);
+        if (!s->select_all)
+            for (const auto& name : s->columns) (void)resolve(name);
+        if (s->where) {
+            if (s->where->predicates.empty() ||
+                s->where->connectors.size() + 1 != s->where->predicates.size())
+                throw SemanticError("malformed WHERE condition");
+            for (const auto& predicate : s->where->predicates) {
+                const auto* column = resolve(predicate.column);
+                if (predicate.type == sql::PredicateType::COMPARISON ||
+                    predicate.type == sql::PredicateType::LIKE) {
+                    if (predicate.values.size() != 1)
+                        throw SemanticError("malformed WHERE predicate");
+                    if (predicate.type == sql::PredicateType::COMPARISON)
+                        CheckValueType(*column, predicate.values[0], At(predicate.position));
+                    else if (column->type != sql::ColumnType::TEXT ||
+                             predicate.values[0].type != sql::Value::Type::STRING)
+                        throw SemanticError("LIKE requires TEXT values" + At(predicate.position));
+                } else if (predicate.type == sql::PredicateType::IN) {
+                    for (const auto& value : predicate.values)
+                        CheckValueType(*column, value, At(predicate.position));
+                } else if (predicate.type == sql::PredicateType::BETWEEN) {
+                    if (predicate.values.size() != 2)
+                        throw SemanticError("BETWEEN requires two values" + At(predicate.position));
+                    for (const auto& value : predicate.values)
+                        CheckValueType(*column, value, At(predicate.position));
+                }
+            }
+        }
     } else if (const auto* s = std::get_if<sql::UpdateStatement>(&stmt)) {
         const TableSchema& table = RequireTable(catalog, s->table);
         for (const auto& assignment : s->assignments) {
