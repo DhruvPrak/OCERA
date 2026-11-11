@@ -1,6 +1,7 @@
 #include "sql/executor.h"
 
 #include <exception>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -729,6 +730,21 @@ bool SqlExecutor::ExecuteInsert(
         return false;
     }
 
+    // Keep every index on this table synchronized with the inserted row.
+    for (const auto& index : catalog_.Indexes()) {
+        if (NormalizeIdentifier(index.table_name) != key) continue;
+        const int column = schema->ColumnIndex(index.column_name);
+        const auto tree = indexes_.find(NormalizeIdentifier(index.name));
+        if (column < 0 || tree == indexes_.end() ||
+            !tree->second->Insert(
+                statement.values[static_cast<std::size_t>(column)].int_value,
+                new_rid)) {
+            table_it->second.record_table->Delete(new_rid);
+            SetError(error, "failed to update index '" + index.name + "' after INSERT");
+            return false;
+        }
+    }
+
     if (inserted_rid != nullptr) {
         *inserted_rid = new_rid;
     }
@@ -774,8 +790,79 @@ bool SqlExecutor::ExecuteSelect(
     }
 
     std::vector<std::pair<RID, std::vector<sql::Value>>> stored_rows;
+    bool used_index = false;
 
-    if (!table_it->second.record_table->Scan(&stored_rows, error)) {
+    // Use one indexed comparison only when the whole predicate is AND-only.
+    // The complete WHERE expression is still re-evaluated below.
+    if (statement.where.has_value() &&
+        statement.where->comparisons.size() > 0 &&
+        statement.where->connectors.size() + 1 ==
+            statement.where->comparisons.size()) {
+        const bool has_or = std::find(statement.where->connectors.begin(),
+                                      statement.where->connectors.end(),
+                                      sql::LogicalOp::OR) !=
+                            statement.where->connectors.end();
+        if (!has_or) {
+            for (const auto& comparison : statement.where->comparisons) {
+                if (comparison.value.type != sql::Value::Type::INTEGER) continue;
+                const IndexSchema* metadata =
+                    catalog_.GetIndexForColumn(statement.table, comparison.column);
+                if (metadata == nullptr) continue;
+                const auto tree_it = indexes_.find(
+                    NormalizeIdentifier(metadata->name));
+                if (tree_it == indexes_.end()) continue;
+
+                const auto key = comparison.value.int_value;
+                std::vector<std::pair<BPlusTree::Key, RID>> entries;
+                const auto min_key = std::numeric_limits<BPlusTree::Key>::min();
+                const auto max_key = std::numeric_limits<BPlusTree::Key>::max();
+                switch (comparison.op) {
+                    case sql::CompareOp::EQ:
+                        for (const RID& rid : tree_it->second->SearchAll(key))
+                            entries.emplace_back(key, rid);
+                        break;
+                    case sql::CompareOp::NE:
+                        if (key != min_key) {
+                            auto part = tree_it->second->RangeScan(min_key, key - 1);
+                            entries.insert(entries.end(), part.begin(), part.end());
+                        }
+                        if (key != max_key) {
+                            auto part = tree_it->second->RangeScan(key + 1, max_key);
+                            entries.insert(entries.end(), part.begin(), part.end());
+                        }
+                        break;
+                    case sql::CompareOp::LT:
+                        if (key != min_key)
+                            entries = tree_it->second->RangeScan(min_key, key - 1);
+                        break;
+                    case sql::CompareOp::LE:
+                        entries = tree_it->second->RangeScan(min_key, key);
+                        break;
+                    case sql::CompareOp::GT:
+                        if (key != max_key)
+                            entries = tree_it->second->RangeScan(key + 1, max_key);
+                        break;
+                    case sql::CompareOp::GE:
+                        entries = tree_it->second->RangeScan(key, max_key);
+                        break;
+                }
+
+                for (const auto& entry : entries) {
+                    std::vector<sql::Value> row;
+                    std::string ignored_error;
+                    if (table_it->second.record_table->Get(
+                            entry.second, &row, &ignored_error)) {
+                        stored_rows.emplace_back(entry.second, std::move(row));
+                    }
+                }
+                used_index = true;
+                break;
+            }
+        }
+    }
+
+    if (!used_index &&
+        !table_it->second.record_table->Scan(&stored_rows, error)) {
         return false;
     }
 
@@ -929,6 +1016,30 @@ bool SqlExecutor::ExecuteUpdate(
                     SetError(error, "failed to update a matching row");
                 return false;
             }
+
+            const auto original = std::find_if(
+                stored_rows.begin(), stored_rows.end(),
+                [&](const auto& stored) { return stored.first == update.first; });
+            if (original == stored_rows.end()) continue;
+
+            for (const auto& index : catalog_.Indexes()) {
+                if (NormalizeIdentifier(index.table_name) !=
+                    NormalizeIdentifier(statement.table)) continue;
+                const int column = schema->ColumnIndex(index.column_name);
+                const auto tree = indexes_.find(NormalizeIdentifier(index.name));
+                if (column < 0 || tree == indexes_.end()) continue;
+                const auto position = static_cast<std::size_t>(column);
+                const auto old_key = original->second[position].int_value;
+                const auto new_key = update.second[position].int_value;
+                if (old_key != new_key) {
+                    tree->second->Remove(old_key, update.first);
+                    if (!tree->second->Insert(new_key, update.first)) {
+                        SetError(error, "failed to update index '" + index.name +
+                                        "' after UPDATE");
+                        return false;
+                    }
+                }
+            }
         }
         return true;
     } catch (const std::exception& exception) {
@@ -1016,9 +1127,25 @@ bool SqlExecutor::ExecuteDelete(
         }
 
         for (const RID& rid : matching_rids) {
+            const auto stored = std::find_if(
+                stored_rows.begin(), stored_rows.end(),
+                [&](const auto& row) { return row.first == rid; });
             if (!table_it->second.record_table->Delete(rid)) {
                 SetError(error, "failed to delete a matching row");
                 return false;
+            }
+            if (stored != stored_rows.end()) {
+                for (const auto& index : catalog_.Indexes()) {
+                    if (NormalizeIdentifier(index.table_name) !=
+                        NormalizeIdentifier(statement.table)) continue;
+                    const int column = schema->ColumnIndex(index.column_name);
+                    const auto tree = indexes_.find(NormalizeIdentifier(index.name));
+                    if (column >= 0 && tree != indexes_.end()) {
+                        tree->second->Remove(
+                            stored->second[static_cast<std::size_t>(column)].int_value,
+                            rid);
+                    }
+                }
             }
         }
 
