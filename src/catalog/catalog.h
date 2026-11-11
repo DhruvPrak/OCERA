@@ -74,12 +74,14 @@ public:
     // have type INT. Index names are globally unique; only one index may cover
     // a given table/column pair. This does not build or own a B+Tree.
     void CreateIndex(const sql::CreateIndexStatement& stmt);
+    bool RemoveIndex(const std::string& name);
     bool HasIndex(const std::string& name) const;
-    // Returns nullptr when no matching index exists. Pointers remain stable
-    // because index metadata is never erased.
+    // Returns nullptr when no matching index exists. The returned pointer
+    // remains valid until the corresponding index metadata is erased.
     const IndexSchema* GetIndex(const std::string& name) const;
     const IndexSchema* GetIndexForColumn(const std::string& table,
                                          const std::string& column) const;
+    std::vector<IndexSchema> Indexes() const;
     std::size_t NumIndexes() const { return indexes_.size(); }
 
 private:

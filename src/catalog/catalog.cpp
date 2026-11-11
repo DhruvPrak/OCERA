@@ -242,6 +242,10 @@ void Catalog::CreateIndex(const sql::CreateIndexStatement& stmt) {
     indexes_.emplace(index_key, std::move(schema));
 }
 
+bool Catalog::RemoveIndex(const std::string& name) {
+    return indexes_.erase(NormalizeIdentifier(name)) != 0;
+}
+
 bool Catalog::HasIndex(const std::string& name) const {
     return indexes_.count(NormalizeIdentifier(name)) != 0;
 }
@@ -263,6 +267,17 @@ const IndexSchema* Catalog::GetIndexForColumn(const std::string& table,
         }
     }
     return nullptr;
+}
+
+std::vector<IndexSchema> Catalog::Indexes() const {
+    std::vector<IndexSchema> result;
+    result.reserve(indexes_.size());
+
+    for (const auto& entry : indexes_) {
+        result.push_back(entry.second);
+    }
+
+    return result;
 }
 
 }  // namespace ocera
