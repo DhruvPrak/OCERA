@@ -848,15 +848,23 @@ bool SqlExecutor::ExecuteSelect(
                         break;
                 }
 
+                bool index_lookup_valid = true;
                 for (const auto& entry : entries) {
                     std::vector<sql::Value> row;
                     std::string ignored_error;
-                    if (table_it->second.record_table->Get(
+                    if (!table_it->second.record_table->Get(
                             entry.second, &row, &ignored_error)) {
-                        stored_rows.emplace_back(entry.second, std::move(row));
+                        index_lookup_valid = false;
+                        break;
                     }
+                    stored_rows.emplace_back(entry.second, std::move(row));
                 }
-                used_index = true;
+                if (!index_lookup_valid) {
+                    // A stale/corrupt RID must never cause rows to disappear.
+                    stored_rows.clear();
+                } else {
+                    used_index = true;
+                }
                 break;
             }
         }
