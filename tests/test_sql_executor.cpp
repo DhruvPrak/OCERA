@@ -490,7 +490,19 @@ assert(executor.Execute(
 assert(result.rows.size() == 1);
 assert(SameValue(result.rows[0][0], Int(3)));
 
-std::cout << "[29d] DELETE removes the index entry\n";
+std::cout << "[29d] OR predicate uses safe scan fallback\n";
+assert(executor.Execute(
+    "SELECT id FROM index_students WHERE age = 20 OR id = 3;",
+    nullptr, &error, &result));
+assert(result.rows.size() == 3);
+
+std::cout << "[29e] Indexed range scan returns matching rows\n";
+assert(executor.Execute(
+    "SELECT id FROM index_students WHERE age >= 20 AND age < 21;",
+    nullptr, &error, &result));
+assert(result.rows.size() == 2);
+
+std::cout << "[29f] DELETE removes the index entry\n";
 assert(executor.Execute(
     "DELETE FROM index_students WHERE age = 31;",
     nullptr, &error));
@@ -498,16 +510,6 @@ assert(executor.Execute(
     "SELECT id FROM index_students WHERE age = 31;",
     nullptr, &error, &result));
 assert(result.rows.empty());
-
-std::cout << "[29e] Indexed range scan and OR fallback preserve results\n";
-assert(executor.Execute(
-    "SELECT id FROM index_students WHERE age >= 20 AND age < 21;",
-    nullptr, &error, &result));
-assert(result.rows.size() == 2);
-assert(executor.Execute(
-    "SELECT id FROM index_students WHERE age = 20 OR id = 3;",
-    nullptr, &error, &result));
-assert(result.rows.size() == 2);
 
 std::cout << "[30] Reject duplicate index creation\n";
 
