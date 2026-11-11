@@ -113,6 +113,16 @@ int main() {
          {T::IDENTIFIER, "students"}, {T::SYMBOL, "("},
          {T::IDENTIFIER, "age"}, {T::SYMBOL, ")"}, {T::SYMBOL, ";"}},
         "CREATE INDEX");
+    CheckTokens(
+        "SELECT students.name, school.students.id FROM school.students",
+        {{T::KEYWORD, "SELECT"}, {T::IDENTIFIER, "students"},
+         {T::SYMBOL, "."}, {T::IDENTIFIER, "name"}, {T::SYMBOL, ","},
+         {T::IDENTIFIER, "school"}, {T::SYMBOL, "."},
+         {T::IDENTIFIER, "students"}, {T::SYMBOL, "."},
+         {T::IDENTIFIER, "id"}, {T::KEYWORD, "FROM"},
+         {T::IDENTIFIER, "school"}, {T::SYMBOL, "."},
+         {T::IDENTIFIER, "students"}},
+        "qualified identifiers");
     Report("existing SQL statements", before);
 
     std::cout << "[2] Phase 3 arithmetic and comparison operators\n";
@@ -128,11 +138,12 @@ int main() {
          {T::IDENTIFIER, "a"}, {T::OPERATOR, ">="}, {T::INTEGER, "7"}},
         "comparison operators");
     CheckTokens(
-        "price + tax - discount / quantity % 2",
+        "price + tax - discount * quantity / factor % 2",
         {{T::IDENTIFIER, "price"}, {T::OPERATOR, "+"},
          {T::IDENTIFIER, "tax"}, {T::OPERATOR, "-"},
-         {T::IDENTIFIER, "discount"}, {T::OPERATOR, "/"},
-         {T::IDENTIFIER, "quantity"}, {T::OPERATOR, "%"},
+         {T::IDENTIFIER, "discount"}, {T::OPERATOR, "*"},
+         {T::IDENTIFIER, "quantity"}, {T::OPERATOR, "/"},
+         {T::IDENTIFIER, "factor"}, {T::OPERATOR, "%"},
          {T::INTEGER, "2"}},
         "arithmetic operators");
     CheckTokens(
@@ -279,6 +290,12 @@ int main() {
     Check(ThrowsTokenizerError("SELECT #"), "unknown hash character rejected");
     Check(ThrowsTokenizerError("SELECT 1.5", &position) && position == 8,
           "decimal point rejected until decimal literals are implemented");
+    Check(ThrowsTokenizerError(".name", &position) && position == 0,
+          "leading dot rejected");
+    Check(ThrowsTokenizerError("table.", &position) && position == 5,
+          "trailing dot rejected");
+    Check(ThrowsTokenizerError("table..column", &position) && position == 5,
+          "repeated dot rejected");
     Report("lexical error handling", before);
 
     if (g_failures == 0) {
