@@ -88,6 +88,27 @@ int main() {
         CHECK(index->table_name == "courses");
         CHECK(index->column_name == "student_id");
 
+        // The runtime B+Tree must be rebuilt and usable after reopening.
+        CHECK(sql.Execute(
+            "SELECT id FROM courses WHERE student_id = 1;",
+            nullptr, &error, &result));
+        CHECK(result.rows.size() == 1);
+
+        // DML after restart must keep the rebuilt index synchronized.
+        CHECK(sql.Execute(
+            "INSERT INTO courses VALUES (11, 2);",
+            nullptr, &error));
+        CHECK(sql.Execute(
+            "UPDATE courses SET student_id = 1 WHERE id = 11;",
+            nullptr, &error));
+        CHECK(sql.Execute(
+            "SELECT id FROM courses WHERE student_id = 1;",
+            nullptr, &error, &result));
+        CHECK(result.rows.size() == 2);
+        CHECK(sql.Execute(
+            "DELETE FROM courses WHERE id = 10;",
+            nullptr, &error));
+
         CHECK(sql.Execute(
             "SELECT * FROM students;",
             nullptr, &error, &result));
@@ -115,6 +136,12 @@ int main() {
         SqlExecutor sql(catalog, bpm, &header);
 
         CHECK(catalog.HasIndex("idx_courses_student_id"));
+
+        CHECK(sql.Execute(
+            "SELECT id FROM courses WHERE student_id = 1;",
+            nullptr, &error, &result));
+        CHECK(result.rows.size() == 1);
+        CHECK(result.rows[0][0].int_value == 11);
 
         CHECK(sql.Execute(
             "SELECT * FROM students WHERE id = 1;",
