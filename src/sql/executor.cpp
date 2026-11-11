@@ -1,5 +1,6 @@
 #include "sql/executor.h"
 
+#include <algorithm>
 #include <exception>
 #include <limits>
 #include <stdexcept>
