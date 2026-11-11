@@ -260,32 +260,108 @@ DropTableStatement ParseDrop() {
     std::optional<Condition> ParseOptionalWhere() {
         if (!IsKeyword(Peek(), "WHERE")) return std::nullopt;
         Advance();
-        Condition c;
-        c.comparisons.push_back(ParseComparison());
+        Condition condition;
+        pending_comparisons_.clear();
+        condition.predicates.push_back(ParsePredicate());
         while (IsKeyword(Peek(), "AND") || IsKeyword(Peek(), "OR")) {
-            c.connectors.push_back(Peek().text == "AND" ? LogicalOp::AND : LogicalOp::OR);
+            condition.connectors.push_back(
+                Peek().text == "AND" ? LogicalOp::AND : LogicalOp::OR);
             Advance();
-            c.comparisons.push_back(ParseComparison());
+            condition.predicates.push_back(ParsePredicate());
         }
-        return c;
+        condition.comparisons = pending_comparisons_;
+        return condition;
     }
-    Comparison ParseComparison() {
-        Comparison cmp;
-        const Token& col = ExpectIdentifier("column name");
-        cmp.column = col.text; cmp.position = col.position;
+
+    ConditionPredicate ParsePredicate() {
+        bool negated = false;
+        if (IsKeyword(Peek(), "NOT")) {
+            negated = true;
+            Advance();
+        }
+
+        ConditionPredicate predicate;
+        const Token& column = ExpectIdentifier("column name");
+        predicate.column = column.text;
+        predicate.position = column.position;
+        predicate.negated = negated;
+
+        // SQL also permits `column NOT LIKE/IN/BETWEEN ...`.
+        bool infix_not = false;
+        if (IsKeyword(Peek(), "NOT")) {
+            infix_not = true;
+            Advance();
+        }
+        if (negated && infix_not)
+            Fail("duplicate NOT in condition", Peek().position);
+
+        if (IsKeyword(Peek(), "IS")) {
+            if (infix_not) Fail("NOT is not valid before IS", Peek().position);
+            Advance();
+            predicate.type = PredicateType::IS_NULL;
+            if (IsKeyword(Peek(), "NOT")) {
+                predicate.negated = !predicate.negated;
+                Advance();
+            }
+            ExpectKeyword("NULL");
+            return predicate;
+        }
+
+        if (IsKeyword(Peek(), "LIKE")) {
+            Advance();
+            predicate.type = PredicateType::LIKE;
+            predicate.negated = predicate.negated != infix_not;
+            predicate.values.push_back(ParseValue());
+            return predicate;
+        }
+        if (IsKeyword(Peek(), "IN")) {
+            Advance();
+            predicate.type = PredicateType::IN;
+            predicate.negated = predicate.negated != infix_not;
+            ExpectSymbol("(");
+            predicate.values.push_back(ParseValue());
+            while (IsSymbol(Peek(), ",")) {
+                Advance();
+                predicate.values.push_back(ParseValue());
+            }
+            ExpectSymbol(")");
+            return predicate;
+        }
+        if (IsKeyword(Peek(), "BETWEEN")) {
+            Advance();
+            predicate.type = PredicateType::BETWEEN;
+            predicate.negated = predicate.negated != infix_not;
+            predicate.values.push_back(ParseValue());
+            ExpectKeyword("AND");
+            predicate.values.push_back(ParseValue());
+            return predicate;
+        }
+        if (infix_not)
+            Fail("expected LIKE, IN or BETWEEN after NOT", Peek().position);
+
         const Token& op = Peek();
         if (op.type != TokenType::OPERATOR)
-            Fail("expected comparison operator (=, !=, <, >, <=, >=) but found " +
+            Fail("expected comparison operator, IS, LIKE, IN or BETWEEN but found " +
                  Describe(op), op.position);
-        if (op.text == "=") cmp.op = CompareOp::EQ;
-        else if (op.text == "!=") cmp.op = CompareOp::NE;
-        else if (op.text == "<") cmp.op = CompareOp::LT;
-        else if (op.text == ">") cmp.op = CompareOp::GT;
-        else if (op.text == "<=") cmp.op = CompareOp::LE;
-        else cmp.op = CompareOp::GE;
+        predicate.type = PredicateType::COMPARISON;
+        if (op.text == "=") predicate.op = CompareOp::EQ;
+        else if (op.text == "!=" || op.text == "<>") predicate.op = CompareOp::NE;
+        else if (op.text == "<") predicate.op = CompareOp::LT;
+        else if (op.text == ">") predicate.op = CompareOp::GT;
+        else if (op.text == "<=") predicate.op = CompareOp::LE;
+        else if (op.text == ">=") predicate.op = CompareOp::GE;
+        else Fail("invalid comparison operator '" + op.text + "'", op.position);
         Advance();
-        cmp.value = ParseValue();
-        return cmp;
+        predicate.values.push_back(ParseValue());
+
+        Comparison comparison;
+        comparison.column = predicate.column;
+        comparison.op = predicate.op;
+        comparison.value = predicate.values.front();
+        comparison.position = predicate.position;
+        // Kept for existing clients that inspect the legacy comparison list.
+        pending_comparisons_.push_back(comparison);
+        return predicate;
     }
     Value ParseValue() {
         const Token& t = Peek();
@@ -306,6 +382,7 @@ DropTableStatement ParseDrop() {
     }
 
     std::vector<Token> tokens_;
+    std::vector<Comparison> pending_comparisons_;
     std::size_t index_ = 0;
 };
 }  // namespace

@@ -21,6 +21,7 @@ struct Value {
 
 enum class CompareOp { EQ, NE, LT, GT, LE, GE };
 enum class LogicalOp { AND, OR };
+enum class PredicateType { COMPARISON, IS_NULL, LIKE, IN, BETWEEN };
 
 struct Comparison {
     std::string column;
@@ -29,7 +30,20 @@ struct Comparison {
     std::size_t position = 0;
 };
 
+struct ConditionPredicate {
+    PredicateType type = PredicateType::COMPARISON;
+    std::string column;
+    CompareOp op = CompareOp::EQ;
+    std::vector<Value> values;
+    bool negated = false;
+    std::size_t position = 0;
+};
+
 struct Condition {
+    // `predicates` is the complete ordered predicate list used by validation
+    // and execution. `comparisons` remains populated for ordinary comparisons
+    // to preserve the existing public AST inspection contract.
+    std::vector<ConditionPredicate> predicates;
     std::vector<Comparison> comparisons;
     std::vector<LogicalOp> connectors;
 };

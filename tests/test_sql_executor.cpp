@@ -182,6 +182,65 @@ int main() {
         assert(SameValue(result.rows[0][0], Int(7)));
         assert(SameValue(result.rows[1][0], Int(8)));
 
+        std::cout << "[9a] LIKE, IN, BETWEEN, NOT and NULL predicates\n";
+        assert(executor.Execute(
+            "SELECT id FROM students WHERE name LIKE 'A%';",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1 && SameValue(result.rows[0][0], Int(7)));
+
+        assert(executor.Execute(
+            "SELECT id FROM students WHERE name NOT LIKE 'A%';",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1 && SameValue(result.rows[0][0], Int(8)));
+
+        assert(executor.Execute(
+            "SELECT id FROM students WHERE id IN (7, 8, 99);",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 2);
+
+        assert(executor.Execute(
+            "SELECT id FROM students WHERE age BETWEEN 20 AND 21;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 2);
+
+        assert(executor.Execute(
+            "SELECT id FROM students WHERE NOT age = 20;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1 && SameValue(result.rows[0][0], Int(8)));
+
+        assert(executor.Execute(
+            "SELECT id FROM students WHERE age NOT BETWEEN 20 AND 20;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1 && SameValue(result.rows[0][0], Int(8)));
+
+        assert(executor.Execute(
+            "SELECT id FROM students WHERE name IS NULL;",
+            nullptr, &error, &result));
+        assert(result.rows.empty());
+
+        assert(executor.Execute(
+            "SELECT id FROM students WHERE name IS NOT NULL;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 2);
+
+        assert(executor.Execute(
+            "SELECT id FROM students WHERE id = 7 OR id = 8 AND age IN (21);",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 2);
+
+        assert(!executor.Execute(
+            "SELECT id FROM students WHERE id LIKE '7';",
+            nullptr, &error, &result));
+        assert(!error.empty());
+        assert(!executor.Execute(
+            "SELECT id FROM students WHERE name IN (7);",
+            nullptr, &error, &result));
+        assert(!error.empty());
+        assert(!executor.Execute(
+            "SELECT id FROM students WHERE age BETWEEN 1 AND 'x';",
+            nullptr, &error, &result));
+        assert(!error.empty());
+
         std::cout << "[10] SELECT with no matching rows\n";
         assert(executor.Execute(
             "SELECT * FROM students WHERE age > 100;",
@@ -490,6 +549,13 @@ assert(executor.Execute(
 assert(result.rows.size() == 1);
 assert(SameValue(result.rows[0][0], Int(3)));
 
+std::cout << "[29d-1] Negated comparison bypasses index candidate filtering\n";
+assert(executor.Execute(
+    "SELECT id FROM index_students WHERE NOT age = 20;",
+    nullptr, &error, &result));
+assert(result.rows.size() == 1);
+assert(SameValue(result.rows[0][0], Int(3)));
+
 std::cout << "[29d] OR predicate uses safe scan fallback\n";
 assert(executor.Execute(
     "SELECT id FROM index_students WHERE age = 20 OR id = 3;",
@@ -586,6 +652,27 @@ assert(catalog.HasIndex("idx_empty_id"));
 
         assert(!error.empty());
 
+
+        std::cout << "[33] UPDATE and DELETE use extended predicates\n";
+        assert(executor.Execute(
+            "CREATE TABLE condition_rows (id INT, name TEXT);", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO condition_rows VALUES (1, 'Alpha');", nullptr, &error));
+        assert(executor.Execute(
+            "INSERT INTO condition_rows VALUES (2, 'Beta');", nullptr, &error));
+        assert(executor.Execute(
+            "UPDATE condition_rows SET name = 'Changed' WHERE id IN (1);",
+            nullptr, &error));
+        assert(executor.Execute(
+            "SELECT id FROM condition_rows WHERE name LIKE 'Ch%';",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1 && SameValue(result.rows[0][0], Int(1)));
+        assert(executor.Execute(
+            "DELETE FROM condition_rows WHERE id BETWEEN 1 AND 1;",
+            nullptr, &error));
+        assert(executor.Execute(
+            "SELECT id FROM condition_rows;", nullptr, &error, &result));
+        assert(result.rows.size() == 1 && SameValue(result.rows[0][0], Int(2)));
 
         bpm.FlushAllPages();
     }

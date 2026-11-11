@@ -251,42 +251,97 @@ bool ValidateIncomingForeignKeys(const TableSchema& parent_schema,
     return true;
 }
 
+bool LikeMatches(const std::string& value, const std::string& pattern) {
+    // Dynamic programming keeps wildcard matching linear in the pattern/value
+    // grid and avoids recursive backtracking on repeated '%' characters.
+    std::vector<bool> previous(value.size() + 1, false);
+    std::vector<bool> current(value.size() + 1, false);
+    previous[0] = true;
+
+    for (char token : pattern) {
+        std::fill(current.begin(), current.end(), false);
+        if (token == '%') {
+            current[0] = previous[0];
+            for (std::size_t j = 1; j <= value.size(); ++j)
+                current[j] = previous[j] || current[j - 1];
+        } else {
+            for (std::size_t j = 1; j <= value.size(); ++j) {
+                if (token == '_' || token == value[j - 1])
+                    current[j] = previous[j - 1];
+            }
+        }
+        previous.swap(current);
+    }
+    return previous[value.size()];
+}
+
+bool MatchesPredicate(const sql::ConditionPredicate& predicate,
+                      const TableSchema& schema,
+                      const std::vector<sql::Value>& row) {
+    const int column_index = schema.ColumnIndex(predicate.column);
+    if (column_index < 0 ||
+        static_cast<std::size_t>(column_index) >= row.size()) return false;
+
+    const sql::Value& value = row[static_cast<std::size_t>(column_index)];
+    bool matches = false;
+    switch (predicate.type) {
+        case sql::PredicateType::COMPARISON:
+            matches = predicate.values.size() == 1 &&
+                CompareValues(value, predicate.op, predicate.values[0]);
+            break;
+        case sql::PredicateType::IS_NULL:
+            // Stored rows currently cannot contain NULL. Therefore IS NULL is
+            // false and IS NOT NULL is true for every existing row.
+            matches = false;
+            break;
+        case sql::PredicateType::LIKE:
+            matches = predicate.values.size() == 1 &&
+                value.type == sql::Value::Type::STRING &&
+                predicate.values[0].type == sql::Value::Type::STRING &&
+                LikeMatches(value.string_value,
+                            predicate.values[0].string_value);
+            break;
+        case sql::PredicateType::IN:
+            for (const auto& candidate : predicate.values) {
+                if (ValuesEqual(value, candidate)) {
+                    matches = true;
+                    break;
+                }
+            }
+            break;
+        case sql::PredicateType::BETWEEN:
+            if (predicate.values.size() == 2)
+                matches = CompareValues(value, sql::CompareOp::GE,
+                                         predicate.values[0]) &&
+                          CompareValues(value, sql::CompareOp::LE,
+                                         predicate.values[1]);
+            break;
+    }
+    return predicate.negated ? !matches : matches;
+}
+
 bool MatchesCondition(
     const sql::Condition& condition,
     const TableSchema& schema,
     const std::vector<sql::Value>& row
 ) {
-    // AND groups are evaluated first. OR joins those groups.
+    if (condition.predicates.empty() ||
+        condition.connectors.size() + 1 != condition.predicates.size())
+        return false;
+
+    // SQL precedence: AND binds more tightly than OR.
     bool current_and_group = true;
     bool overall_result = false;
-
-    for (std::size_t i = 0; i < condition.comparisons.size(); ++i) {
-        const auto& comparison = condition.comparisons[i];
-        const int column_index = schema.ColumnIndex(comparison.column);
-
-        if (column_index < 0 ||
-            static_cast<std::size_t>(column_index) >= row.size()) {
-            return false;
-        }
-
-        const bool matches = CompareValues(
-            row[static_cast<std::size_t>(column_index)],
-            comparison.op,
-            comparison.value
-        );
-
-        current_and_group = current_and_group && matches;
-
-        const bool end_of_group =
-            i + 1 == condition.comparisons.size() ||
+    for (std::size_t i = 0; i < condition.predicates.size(); ++i) {
+        current_and_group = current_and_group &&
+            MatchesPredicate(condition.predicates[i], schema, row);
+        const bool end_of_group = i + 1 == condition.predicates.size() ||
             condition.connectors[i] == sql::LogicalOp::OR;
-
         if (end_of_group) {
             overall_result = overall_result || current_and_group;
             current_and_group = true;
         }
     }
-
     return overall_result;
 }
 
@@ -795,7 +850,16 @@ bool SqlExecutor::ExecuteSelect(
 
     // Use one indexed comparison only when the whole predicate is AND-only.
     // The complete WHERE expression is still re-evaluated below.
-    if (statement.where.has_value() &&
+    const bool index_safe_condition = statement.where.has_value() &&
+        statement.where->predicates.size() ==
+            statement.where->comparisons.size() &&
+        std::all_of(statement.where->predicates.begin(),
+                    statement.where->predicates.end(),
+                    [](const sql::ConditionPredicate& predicate) {
+                        return predicate.type == sql::PredicateType::COMPARISON &&
+                               !predicate.negated;
+                    });
+    if (index_safe_condition &&
         statement.where->comparisons.size() > 0 &&
         statement.where->connectors.size() + 1 ==
             statement.where->comparisons.size()) {

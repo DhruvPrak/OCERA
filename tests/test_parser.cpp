@@ -395,6 +395,78 @@ int main() {
     }
     Report("FOREIGN KEY declarations", before);
 
+    std::cout << "[23] Extended WHERE predicates" << std::endl;
+    before = g_failures;
+    {
+        auto angle_not_equal = ParseAs<SelectStatement>(
+            "SELECT * FROM t WHERE id <> 4");
+        Check(angle_not_equal.where &&
+              angle_not_equal.where->predicates.size() == 1 &&
+              angle_not_equal.where->predicates[0].op == CompareOp::NE,
+              "<> comparison accepted as not-equal");
+
+        auto is_null = ParseAs<SelectStatement>(
+            "SELECT * FROM t WHERE note IS NULL");
+        Check(is_null.where && is_null.where->predicates.size() == 1 &&
+              is_null.where->predicates[0].type == PredicateType::IS_NULL &&
+              !is_null.where->predicates[0].negated,
+              "IS NULL predicate parsed");
+
+        auto is_not_null = ParseAs<SelectStatement>(
+            "SELECT * FROM t WHERE note IS NOT NULL");
+        Check(is_not_null.where && is_not_null.where->predicates.size() == 1 &&
+              is_not_null.where->predicates[0].negated,
+              "IS NOT NULL parsed");
+
+        auto like = ParseAs<SelectStatement>(
+            "SELECT * FROM t WHERE name NOT LIKE 'A_%'");
+        Check(like.where && like.where->predicates.size() == 1 &&
+              like.where->predicates[0].type == PredicateType::LIKE &&
+              like.where->predicates[0].negated &&
+              IsStr(like.where->predicates[0].values[0], "A_%"),
+              "NOT LIKE pattern parsed");
+
+        auto in = ParseAs<SelectStatement>(
+            "SELECT * FROM t WHERE id IN (1, 2, 3)");
+        Check(in.where && in.where->predicates.size() == 1 &&
+              in.where->predicates[0].type == PredicateType::IN &&
+              in.where->predicates[0].values.size() == 3,
+              "IN value list parsed");
+
+        auto not_in = ParseAs<SelectStatement>(
+            "SELECT * FROM t WHERE id NOT IN (1, 2)");
+        Check(not_in.where && not_in.where->predicates.size() == 1 &&
+              not_in.where->predicates[0].negated,
+              "NOT IN parsed");
+
+        auto between = ParseAs<SelectStatement>(
+            "SELECT * FROM t WHERE id BETWEEN 1 AND 9 OR id NOT BETWEEN 20 AND 30");
+        Check(between.where && between.where->predicates.size() == 2 &&
+              between.where->predicates[0].type == PredicateType::BETWEEN &&
+              between.where->predicates[0].values.size() == 2 &&
+              between.where->connectors.size() == 1 &&
+              between.where->connectors[0] == LogicalOp::OR &&
+              between.where->predicates[1].negated,
+              "BETWEEN, NOT BETWEEN and outer OR parsed");
+
+        auto prefix_not = ParseAs<SelectStatement>(
+            "SELECT * FROM t WHERE NOT id = 1 AND name LIKE '%a%'");
+        Check(prefix_not.where && prefix_not.where->predicates.size() == 2 &&
+              prefix_not.where->predicates[0].negated &&
+              prefix_not.where->connectors[0] == LogicalOp::AND,
+              "prefix NOT parsed with AND connector");
+
+        Check(ParseFails("SELECT * FROM t WHERE id IN ()"),
+              "empty IN list rejected");
+        Check(ParseFails("SELECT * FROM t WHERE id BETWEEN 1"),
+              "BETWEEN without upper bound rejected");
+        Check(ParseFails("SELECT * FROM t WHERE name IS MAYBE"),
+              "IS requires NULL or NOT NULL");
+        Check(ParseFails("SELECT * FROM t WHERE id NOT = 1"),
+              "NOT only accepts supported predicate forms");
+    }
+    Report("extended WHERE predicates", before);
+
     if (g_failures == 0) {
         std::cout << "\nAll parser tests passed.\n";
         return 0;

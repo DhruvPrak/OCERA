@@ -53,13 +53,54 @@ void CheckValueType(const ColumnSchema& col, const Value& value,
 }
 
 void CheckCondition(const sql::Condition& cond, const TableSchema& table) {
-    if (cond.comparisons.empty() ||
-        cond.connectors.size() + 1 != cond.comparisons.size()) {
+    if (cond.predicates.empty() ||
+        cond.connectors.size() + 1 != cond.predicates.size()) {
         throw SemanticError("malformed WHERE condition");
     }
-    for (const auto& cmp : cond.comparisons) {
-        const ColumnSchema* col = RequireColumn(table, cmp.column, At(cmp.position));
-        CheckValueType(*col, cmp.value, At(cmp.value.position));
+
+    for (const auto& predicate : cond.predicates) {
+        const ColumnSchema* col =
+            RequireColumn(table, predicate.column, At(predicate.position));
+        switch (predicate.type) {
+            case sql::PredicateType::COMPARISON:
+                if (predicate.values.size() != 1)
+                    throw SemanticError("comparison requires exactly one value" +
+                                        At(predicate.position));
+                CheckValueType(*col, predicate.values[0],
+                               At(predicate.values[0].position));
+                break;
+            case sql::PredicateType::IS_NULL:
+                if (!predicate.values.empty())
+                    throw SemanticError("IS NULL does not take a value" +
+                                        At(predicate.position));
+                // The current record format has no NULL representation.
+                break;
+            case sql::PredicateType::LIKE:
+                if (col->type != ColumnType::TEXT)
+                    throw SemanticError("LIKE requires a TEXT column" +
+                                        At(predicate.position));
+                if (predicate.values.size() != 1 ||
+                    predicate.values[0].type != Value::Type::STRING)
+                    throw SemanticError("LIKE requires one string pattern" +
+                                        At(predicate.position));
+                break;
+            case sql::PredicateType::IN:
+                if (predicate.values.empty())
+                    throw SemanticError("IN requires at least one value" +
+                                        At(predicate.position));
+                for (const auto& value : predicate.values)
+                    CheckValueType(*col, value, At(value.position));
+                break;
+            case sql::PredicateType::BETWEEN:
+                if (predicate.values.size() != 2)
+                    throw SemanticError("BETWEEN requires two bounds" +
+                                        At(predicate.position));
+                CheckValueType(*col, predicate.values[0],
+                               At(predicate.values[0].position));
+                CheckValueType(*col, predicate.values[1],
+                               At(predicate.values[1].position));
+                break;
+        }
     }
 }
 
