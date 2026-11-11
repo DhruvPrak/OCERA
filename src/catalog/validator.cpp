@@ -352,6 +352,7 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
         }
         if (!s->select_all)
             for (const auto& name : s->columns) (void)resolve(name);
+        for (const auto& item : s->order_by) (void)resolve(item.column);
         if (s->where) {
             if (s->where->predicates.empty() ||
                 s->where->connectors.size() + 1 != s->where->predicates.size())

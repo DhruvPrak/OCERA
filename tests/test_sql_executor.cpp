@@ -816,6 +816,48 @@ assert(catalog.HasIndex("idx_empty_id"));
         assert(result.rows.size() == 1);
         assert(SameValue(result.rows[0][0], Int(5)));
 
+        std::cout << "[45] ORDER BY sorts integer and text columns" << std::endl;
+        assert(executor.Execute(
+            "CREATE TABLE task4_sort (id INT, name TEXT, score INT);", nullptr, &error));
+        assert(executor.Execute("INSERT INTO task4_sort VALUES (1, 'Zoe', 20);", nullptr, &error));
+        assert(executor.Execute("INSERT INTO task4_sort VALUES (2, 'Amy', 30);", nullptr, &error));
+        assert(executor.Execute("INSERT INTO task4_sort VALUES (3, 'Bob', 20);", nullptr, &error));
+        assert(executor.Execute("SELECT name FROM task4_sort ORDER BY score ASC, name DESC;",
+                               nullptr, &error, &result));
+        assert(result.rows.size() == 3);
+        assert(SameValue(result.rows[0][0], Text("Zoe")));
+        assert(SameValue(result.rows[1][0], Text("Bob")));
+        assert(SameValue(result.rows[2][0], Text("Amy")));
+
+        std::cout << "[46] ORDER BY supports qualified JOIN columns" << std::endl;
+        assert(executor.Execute(
+            "SELECT employees.emp_name FROM employees JOIN departments "
+            "ON employees.dept_id = departments.dept_id "
+            "ORDER BY departments.dept_name DESC;", nullptr, &error, &result));
+        assert(result.rows.size() == 3);
+        assert(SameValue(result.rows[0][0], Text("Bob")));
+
+        std::cout << "[47] LIMIT and OFFSET paginate after sorting" << std::endl;
+        assert(executor.Execute(
+            "SELECT name FROM task4_sort ORDER BY score ASC, name ASC LIMIT 1 OFFSET 1;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Text("Zoe")));
+        assert(executor.Execute(
+            "SELECT name FROM task4_sort OFFSET 2;", nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+
+        std::cout << "[48] DISTINCT removes duplicate projected rows" << std::endl;
+        assert(executor.Execute(
+            "SELECT DISTINCT score FROM task4_sort ORDER BY score DESC;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 2);
+        assert(SameValue(result.rows[0][0], Int(30)));
+        assert(SameValue(result.rows[1][0], Int(20)));
+        assert(executor.Execute(
+            "SELECT DISTINCT name, score FROM task4_sort;", nullptr, &error, &result));
+        assert(result.rows.size() == 3);
+
         bpm.FlushAllPages();
     }
 

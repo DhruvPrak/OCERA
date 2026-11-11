@@ -111,12 +111,22 @@ struct JoinClause {
     std::size_t position = 0;
 };
 
+struct OrderByItem {
+    std::string column;
+    bool descending = false;
+    std::size_t position = 0;
+};
+
 struct SelectStatement {
     std::string table;
     bool select_all = false;
+    bool distinct = false;
     std::vector<std::string> columns;
     std::vector<JoinClause> joins;
     std::optional<Condition> where;
+    std::vector<OrderByItem> order_by;
+    std::optional<std::size_t> limit;
+    std::size_t offset = 0;
 };
 
 struct UpdateStatement {

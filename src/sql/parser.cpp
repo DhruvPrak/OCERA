@@ -228,6 +228,10 @@ DropTableStatement ParseDrop() {
     SelectStatement ParseSelect() {
         Advance();
         SelectStatement s;
+        if (IsKeyword(Peek(), "DISTINCT")) {
+            Advance();
+            s.distinct = true;
+        }
         if (IsSymbol(Peek(), "*")) { Advance(); s.select_all = true; }
         else {
             while (true) {
@@ -242,7 +246,47 @@ DropTableStatement ParseDrop() {
             s.joins.push_back(ParseJoinClause());
         }
         s.where = ParseOptionalWhere();
+        if (IsKeyword(Peek(), "ORDER")) {
+            Advance();
+            ExpectKeyword("BY");
+            while (true) {
+                OrderByItem item;
+                item.column = ParseColumnReference(&item.position);
+                if (IsKeyword(Peek(), "ASC")) Advance();
+                else if (IsKeyword(Peek(), "DESC")) {
+                    Advance();
+                    item.descending = true;
+                }
+                s.order_by.push_back(std::move(item));
+                if (!IsSymbol(Peek(), ",")) break;
+                Advance();
+            }
+        }
+        if (IsKeyword(Peek(), "LIMIT")) {
+            Advance();
+            s.limit = ParseNonNegativeInteger("LIMIT");
+            if (IsKeyword(Peek(), "OFFSET")) {
+                Advance();
+                s.offset = ParseNonNegativeInteger("OFFSET");
+            }
+        } else if (IsKeyword(Peek(), "OFFSET")) {
+            Advance();
+            s.offset = ParseNonNegativeInteger("OFFSET");
+        }
         return s;
+    }
+
+    std::size_t ParseNonNegativeInteger(const char* clause) {
+        if (Peek().type != TokenType::INTEGER)
+            Fail(std::string(clause) + " requires a non-negative integer", Peek().position);
+        const Token& token = Advance();
+        try {
+            const long long value = std::stoll(token.text);
+            if (value < 0) Fail(std::string(clause) + " requires a non-negative integer", token.position);
+            return static_cast<std::size_t>(value);
+        } catch (const std::out_of_range&) {
+            Fail(std::string(clause) + " value is out of range", token.position);
+        }
     }
 
     static bool IsJoinStart(const Token& token) {

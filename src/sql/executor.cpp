@@ -1003,12 +1003,89 @@ bool SqlExecutor::ExecuteSelect(
         }
         result.column_names.push_back(name);
     }
+
+    struct OutputRow {
+        std::vector<sql::Value> projected;
+        std::vector<sql::Value> sort_values;
+    };
+    std::vector<std::size_t> order_indices;
+    order_indices.reserve(statement.order_by.size());
+    for (const auto& item : statement.order_by) {
+        std::size_t index = 0;
+        if (!resolve(item.column, &index)) return false;
+        order_indices.push_back(index);
+    }
+
+    std::vector<OutputRow> output_rows;
     for (const auto& row : rows) {
         if (statement.where && !condition_matches(*statement.where,row)) continue;
-        std::vector<sql::Value> projected; projected.reserve(projection.size());
-        for (std::size_t idx : projection) projected.push_back(row[idx]);
-        result.rows.push_back(std::move(projected));
+        OutputRow output;
+        output.projected.reserve(projection.size());
+        for (std::size_t idx : projection) output.projected.push_back(row[idx]);
+        output.sort_values.reserve(order_indices.size());
+        for (std::size_t idx : order_indices) output.sort_values.push_back(row[idx]);
+        output_rows.push_back(std::move(output));
     }
+
+    auto value_equal = [](const sql::Value& a, const sql::Value& b) {
+        if (a.type != b.type) return false;
+        if (a.type == sql::Value::Type::NULL_VALUE) return true;
+        return a.type == sql::Value::Type::INTEGER
+            ? a.int_value == b.int_value : a.string_value == b.string_value;
+    };
+    if (statement.distinct) {
+        std::vector<OutputRow> unique_rows;
+        unique_rows.reserve(output_rows.size());
+        for (auto& candidate : output_rows) {
+            bool duplicate = false;
+            for (const auto& existing : unique_rows) {
+                if (candidate.projected.size() != existing.projected.size()) continue;
+                bool same = true;
+                for (std::size_t i = 0; i < candidate.projected.size(); ++i) {
+                    if (!value_equal(candidate.projected[i], existing.projected[i])) {
+                        same = false;
+                        break;
+                    }
+                }
+                if (same) { duplicate = true; break; }
+            }
+            if (!duplicate) unique_rows.push_back(std::move(candidate));
+        }
+        output_rows = std::move(unique_rows);
+    }
+
+    if (!statement.order_by.empty()) {
+        std::stable_sort(output_rows.begin(), output_rows.end(),
+            [&](const OutputRow& a, const OutputRow& b) {
+                for (std::size_t i = 0; i < statement.order_by.size(); ++i) {
+                    const auto& left = a.sort_values[i];
+                    const auto& right = b.sort_values[i];
+                    int comparison = 0;
+                    if (left.type != right.type) {
+                        comparison = static_cast<int>(left.type) < static_cast<int>(right.type) ? -1 : 1;
+                    } else if (left.type == sql::Value::Type::NULL_VALUE) {
+                        comparison = 0;
+                    } else if (left.type == sql::Value::Type::INTEGER) {
+                        comparison = left.int_value < right.int_value ? -1 :
+                                     left.int_value > right.int_value ? 1 : 0;
+                    } else {
+                        comparison = left.string_value < right.string_value ? -1 :
+                                     left.string_value > right.string_value ? 1 : 0;
+                    }
+                    if (comparison != 0)
+                        return statement.order_by[i].descending ? comparison > 0 : comparison < 0;
+                }
+                return false;
+            });
+    }
+
+    const std::size_t begin = std::min(statement.offset, output_rows.size());
+    const std::size_t available = output_rows.size() - begin;
+    const std::size_t count = statement.limit ? std::min(*statement.limit, available) : available;
+    result.rows.reserve(count);
+    for (std::size_t i = begin; i < begin + count; ++i)
+        result.rows.push_back(std::move(output_rows[i].projected));
+
     *query_result = std::move(result);
     return true;
 }

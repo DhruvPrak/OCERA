@@ -392,6 +392,33 @@ int main() {
     }
     Report("edge cases", before);
 
+    std::cout << "[23] DISTINCT, ORDER BY, LIMIT and OFFSET" << std::endl;
+    before = g_failures;
+    {
+        auto ordered = ParseAs<SelectStatement>(
+            "SELECT DISTINCT name FROM students WHERE id > 0 "
+            "ORDER BY age DESC, name ASC LIMIT 5 OFFSET 2");
+        Check(ordered.distinct, "DISTINCT flag retained");
+        Check(ordered.order_by.size() == 2, "multiple ORDER BY items retained");
+        if (ordered.order_by.size() == 2) {
+            Check(ordered.order_by[0].column == "age" && ordered.order_by[0].descending,
+                  "first ORDER BY item DESC");
+            Check(ordered.order_by[1].column == "name" && !ordered.order_by[1].descending,
+                  "second ORDER BY item ASC");
+        }
+        Check(ordered.limit && *ordered.limit == 5 && ordered.offset == 2,
+              "LIMIT and OFFSET retained");
+        auto offset_only = ParseAs<SelectStatement>("SELECT * FROM students OFFSET 3");
+        Check(!offset_only.limit && offset_only.offset == 3, "OFFSET without LIMIT");
+        Check(ParseFails("SELECT * FROM t LIMIT -1"), "negative LIMIT rejected");
+        Check(ParseFails("SELECT * FROM t OFFSET -2"), "negative OFFSET rejected");
+        Check(ParseFails("SELECT * FROM t LIMIT"), "missing LIMIT value rejected");
+        Check(ParseFails("SELECT * FROM t ORDER BY"), "missing ORDER BY column rejected");
+        Check(ParseFails("SELECT * FROM t LIMIT 1 OFFSET 2 OFFSET 3"),
+              "duplicate OFFSET rejected");
+    }
+    Report("SELECT modifiers", before);
+
     std::cout << "[22] FOREIGN KEY declarations" << std::endl;
     before = g_failures;
     {
