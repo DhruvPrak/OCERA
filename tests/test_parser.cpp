@@ -487,6 +487,29 @@ int main() {
     }
     Report("FOREIGN KEY declarations", before);
 
+    std::cout << "[25] Aggregate expressions and aggregate HAVING" << std::endl;
+    before = g_failures;
+    {
+        auto aggregate = ParseAs<SelectStatement>(
+            "SELECT department, COUNT(*), COUNT(id), SUM(id), AVG(id), MIN(id), MAX(id) "
+            "FROM staff GROUP BY department HAVING COUNT(*) > 1");
+        Check(aggregate.select_items.size() == 7, "aggregate and plain select items retained");
+        Check(aggregate.select_items[0].column == "department" &&
+              !aggregate.select_items[0].aggregate, "plain select item retained");
+        Check(aggregate.select_items[1].aggregate &&
+              aggregate.select_items[1].aggregate->function == AggregateFunction::COUNT &&
+              aggregate.select_items[1].aggregate->star, "COUNT(*) parsed");
+        Check(aggregate.select_items[3].aggregate &&
+              aggregate.select_items[3].aggregate->function == AggregateFunction::SUM &&
+              aggregate.select_items[3].aggregate->column == "id", "SUM(column) parsed");
+        Check(aggregate.having && aggregate.having->predicates[0].aggregate &&
+              aggregate.having->predicates[0].aggregate->function == AggregateFunction::COUNT,
+              "aggregate HAVING parsed");
+        Check(ParseFails("SELECT SUM(*) FROM staff"), "SUM(*) rejected");
+        Check(ParseFails("SELECT COUNT( FROM staff"), "malformed aggregate call rejected");
+    }
+    Report("aggregate expressions", before);
+
     if (g_failures == 0) {
         std::cout << "\nAll parser tests passed.\n";
         return 0;

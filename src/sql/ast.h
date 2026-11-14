@@ -23,6 +23,20 @@ enum class CompareOp { EQ, NE, LT, GT, LE, GE };
 enum class LogicalOp { AND, OR };
 enum class PredicateType { COMPARISON, IS_NULL, LIKE, IN, BETWEEN };
 
+enum class AggregateFunction { COUNT, SUM, AVG, MIN, MAX };
+
+struct AggregateExpression {
+    AggregateFunction function = AggregateFunction::COUNT;
+    std::string column;
+    bool star = false;
+    std::size_t position = 0;
+};
+
+struct SelectItem {
+    std::string column;
+    std::optional<AggregateExpression> aggregate;
+};
+
 struct Comparison {
     std::string column;
     CompareOp op = CompareOp::EQ;
@@ -36,6 +50,7 @@ struct ConditionPredicate {
     CompareOp op = CompareOp::EQ;
     std::vector<Value> values;
     bool negated = false;
+    std::optional<AggregateExpression> aggregate;
     std::size_t position = 0;
 };
 
@@ -121,7 +136,8 @@ struct SelectStatement {
     std::string table;
     bool select_all = false;
     bool distinct = false;
-    std::vector<std::string> columns;
+    std::vector<std::string> columns; // legacy plain-column projection view
+    std::vector<SelectItem> select_items;
     std::vector<JoinClause> joins;
     std::optional<Condition> where;
     std::vector<std::string> group_by;

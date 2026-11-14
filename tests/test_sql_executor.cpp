@@ -909,6 +909,80 @@ assert(catalog.HasIndex("idx_empty_id"));
             nullptr, &error, &result));
         assert(!error.empty());
 
+        std::cout << "[55] COUNT, SUM, AVG, MIN and MAX without GROUP BY" << std::endl;
+        assert(executor.Execute(
+            "SELECT COUNT(*), COUNT(id), SUM(id), AVG(id), MIN(id), MAX(id) "
+            "FROM task5_groups;", nullptr, &error, &result));
+        assert(result.rows.size() == 1 && result.rows[0].size() == 6);
+        assert(SameValue(result.rows[0][0], Int(4)));
+        assert(SameValue(result.rows[0][1], Int(4)));
+        assert(SameValue(result.rows[0][2], Int(10)));
+        assert(SameValue(result.rows[0][3], Int(2)));
+        assert(SameValue(result.rows[0][4], Int(1)));
+        assert(SameValue(result.rows[0][5], Int(4)));
+
+        std::cout << "[56] Multiple aggregates work with GROUP BY" << std::endl;
+        assert(executor.Execute(
+            "SELECT department, COUNT(*), SUM(id), AVG(id) FROM task5_groups "
+            "GROUP BY department ORDER BY department;", nullptr, &error, &result));
+        assert(result.rows.size() == 2);
+        assert(SameValue(result.rows[0][0], Text("Engineering")));
+        assert(SameValue(result.rows[0][1], Int(2)));
+        assert(SameValue(result.rows[0][2], Int(3)));
+        assert(SameValue(result.rows[0][3], Int(1)));
+        assert(SameValue(result.rows[1][1], Int(2)));
+        assert(SameValue(result.rows[1][2], Int(7)));
+
+        std::cout << "[57] Aggregate HAVING filters groups" << std::endl;
+        assert(executor.Execute(
+            "SELECT department, COUNT(*) FROM task5_groups GROUP BY department "
+            "HAVING COUNT(*) > 1 ORDER BY department;", nullptr, &error, &result));
+        assert(result.rows.size() == 2);
+        assert(SameValue(result.rows[0][1], Int(2)));
+
+        std::cout << "[57a] HAVING can filter with SUM as well as COUNT" << std::endl;
+        assert(executor.Execute(
+            "SELECT department, SUM(id) FROM task5_groups GROUP BY department "
+            "HAVING SUM(id) > 5;", nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Text("Sales")));
+        assert(SameValue(result.rows[0][1], Int(7)));
+
+        std::cout << "[58] MIN and MAX support TEXT values" << std::endl;
+        assert(executor.Execute(
+            "SELECT MIN(department), MAX(department) FROM task5_groups;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Text("Engineering")));
+        assert(SameValue(result.rows[0][1], Text("Sales")));
+
+        std::cout << "[59] COUNT(column) ignores NULLs from an outer join" << std::endl;
+        assert(executor.Execute(
+            "SELECT COUNT(*), COUNT(departments.dept_name) FROM employees "
+            "LEFT JOIN departments ON employees.dept_id = departments.dept_id;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Int(4)));
+        assert(SameValue(result.rows[0][1], Int(3)));
+
+        std::cout << "[60] Empty input returns COUNT 0 and NULL for other aggregates" << std::endl;
+        assert(executor.Execute("CREATE TABLE task6_empty (id INT);", nullptr, &error));
+        assert(executor.Execute(
+            "SELECT COUNT(*), SUM(id), AVG(id), MIN(id), MAX(id) FROM task6_empty;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Int(0)));
+        for (std::size_t i = 1; i < result.rows[0].size(); ++i)
+            assert(result.rows[0][i].type == sql::Value::Type::NULL_VALUE);
+
+        std::cout << "[61] Aggregate validation rejects invalid arguments and mixed projections" << std::endl;
+        assert(!executor.Execute("SELECT SUM(emp_name) FROM employees;", nullptr, &error, &result));
+        assert(!error.empty());
+        assert(!executor.Execute("SELECT emp_name, COUNT(*) FROM employees;", nullptr, &error, &result));
+        assert(!error.empty());
+        assert(!executor.Execute("SELECT COUNT(*) FROM employees WHERE COUNT(*) > 1;", nullptr, &error, &result));
+        assert(!error.empty());
+
         bpm.FlushAllPages();
     }
 

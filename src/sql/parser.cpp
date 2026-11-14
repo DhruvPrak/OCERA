@@ -225,6 +225,34 @@ DropTableStatement ParseDrop() {
         ExpectSymbol(")");
         return s;
     }
+    static bool IsAggregateFunction(const Token& token) {
+        return IsKeyword(token, "COUNT") || IsKeyword(token, "SUM") ||
+               IsKeyword(token, "AVG") || IsKeyword(token, "MIN") ||
+               IsKeyword(token, "MAX");
+    }
+
+    AggregateExpression ParseAggregateExpression() {
+        const Token function = Advance();
+        AggregateExpression expression;
+        expression.position = function.position;
+        if (function.text == "COUNT") expression.function = AggregateFunction::COUNT;
+        else if (function.text == "SUM") expression.function = AggregateFunction::SUM;
+        else if (function.text == "AVG") expression.function = AggregateFunction::AVG;
+        else if (function.text == "MIN") expression.function = AggregateFunction::MIN;
+        else expression.function = AggregateFunction::MAX;
+        ExpectSymbol("(");
+        if (IsSymbol(Peek(), "*")) {
+            Advance();
+            expression.star = true;
+            if (expression.function != AggregateFunction::COUNT)
+                Fail("only COUNT accepts '*'", function.position);
+        } else {
+            expression.column = ParseColumnReference();
+        }
+        ExpectSymbol(")");
+        return expression;
+    }
+
     SelectStatement ParseSelect() {
         Advance();
         SelectStatement s;
@@ -235,7 +263,14 @@ DropTableStatement ParseDrop() {
         if (IsSymbol(Peek(), "*")) { Advance(); s.select_all = true; }
         else {
             while (true) {
-                s.columns.push_back(ParseColumnReference());
+                SelectItem item;
+                if (IsAggregateFunction(Peek())) {
+                    item.aggregate = ParseAggregateExpression();
+                } else {
+                    item.column = ParseColumnReference();
+                    s.columns.push_back(item.column);
+                }
+                s.select_items.push_back(std::move(item));
                 if (IsSymbol(Peek(), ",")) { Advance(); continue; }
                 break;
             }
@@ -422,8 +457,27 @@ DropTableStatement ParseDrop() {
         }
 
         ConditionPredicate predicate;
-        predicate.column = ParseColumnReference(&predicate.position);
         predicate.negated = negated;
+        if (IsAggregateFunction(Peek())) {
+            predicate.aggregate = ParseAggregateExpression();
+            predicate.position = predicate.aggregate->position;
+            if (negated) Fail("NOT is not supported before an aggregate predicate", predicate.position);
+            const Token& aggregate_op = Peek();
+            if (aggregate_op.type != TokenType::OPERATOR)
+                Fail("aggregate predicate requires a comparison operator", aggregate_op.position);
+            predicate.type = PredicateType::COMPARISON;
+            if (aggregate_op.text == "=") predicate.op = CompareOp::EQ;
+            else if (aggregate_op.text == "!=" || aggregate_op.text == "<>") predicate.op = CompareOp::NE;
+            else if (aggregate_op.text == "<") predicate.op = CompareOp::LT;
+            else if (aggregate_op.text == ">") predicate.op = CompareOp::GT;
+            else if (aggregate_op.text == "<=") predicate.op = CompareOp::LE;
+            else if (aggregate_op.text == ">=") predicate.op = CompareOp::GE;
+            else Fail("invalid aggregate comparison operator", aggregate_op.position);
+            Advance();
+            predicate.values.push_back(ParseValue());
+            return predicate;
+        }
+        predicate.column = ParseColumnReference(&predicate.position);
 
         // SQL also permits `column NOT LIKE/IN/BETWEEN ...`.
         bool infix_not = false;

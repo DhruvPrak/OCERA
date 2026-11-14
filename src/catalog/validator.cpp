@@ -363,26 +363,72 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
                                     "' must appear in GROUP BY");
         };
 
+        auto validate_aggregate = [&](const sql::AggregateExpression& aggregate) {
+            if (aggregate.star) {
+                if (aggregate.function != sql::AggregateFunction::COUNT)
+                    throw SemanticError("only COUNT accepts '*'");
+                return;
+            }
+            const auto* column = resolve(aggregate.column);
+            if ((aggregate.function == sql::AggregateFunction::SUM ||
+                 aggregate.function == sql::AggregateFunction::AVG) &&
+                column->type != ColumnType::INT)
+                throw SemanticError("SUM and AVG require an INT column" + At(aggregate.position));
+        };
+        bool has_aggregate = false;
+        if (!s->select_items.empty()) {
+            for (const auto& item : s->select_items) {
+                if (item.aggregate) {
+                    has_aggregate = true;
+                    validate_aggregate(*item.aggregate);
+                }
+            }
+        }
+        if (s->having) {
+            for (const auto& predicate : s->having->predicates) {
+                if (predicate.aggregate) {
+                    has_aggregate = true;
+                    validate_aggregate(*predicate.aggregate);
+                }
+            }
+        }
+
         if (!s->group_by.empty()) {
             if (s->select_all) {
                 for (const auto* table : tables)
                     for (const auto& column : table->columns)
                         require_grouped(table->name + "." + column.name, "SELECT");
+            } else if (!s->select_items.empty()) {
+                for (const auto& item : s->select_items)
+                    if (!item.aggregate) require_grouped(item.column, "SELECT");
             } else {
                 for (const auto& name : s->columns) require_grouped(name, "SELECT");
             }
             for (const auto& item : s->order_by)
                 require_grouped(item.column, "ORDER BY");
-        } else if (s->having) {
-            throw SemanticError("HAVING requires GROUP BY");
+        } else if (s->having && !has_aggregate) {
+            throw SemanticError("HAVING requires GROUP BY or an aggregate function");
+        }
+        if (has_aggregate && s->select_all)
+            throw SemanticError("SELECT * cannot be combined with aggregate functions");
+        if (has_aggregate && s->group_by.empty()) {
+            const bool has_plain_projection = !s->select_items.empty() &&
+                std::any_of(s->select_items.begin(), s->select_items.end(),
+                    [](const auto& item) { return !item.aggregate.has_value(); });
+            if (has_plain_projection)
+                throw SemanticError("non-aggregate SELECT columns require GROUP BY");
         }
 
+        if (has_aggregate && s->group_by.empty() && !s->order_by.empty())
+            throw SemanticError("ORDER BY columns in an aggregate query require GROUP BY");
         for (const auto& item : s->order_by) (void)resolve(item.column);
         if (s->where) {
             if (s->where->predicates.empty() ||
                 s->where->connectors.size() + 1 != s->where->predicates.size())
                 throw SemanticError("malformed WHERE condition");
             for (const auto& predicate : s->where->predicates) {
+                if (predicate.aggregate)
+                    throw SemanticError("aggregate functions are not allowed in WHERE" + At(predicate.position));
                 const auto* column = resolve(predicate.column);
                 if (predicate.type == sql::PredicateType::COMPARISON ||
                     predicate.type == sql::PredicateType::LIKE) {
@@ -409,9 +455,26 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
                 s->having->connectors.size() + 1 != s->having->predicates.size())
                 throw SemanticError("malformed HAVING condition");
             for (const auto& predicate : s->having->predicates) {
+                if (predicate.aggregate) {
+                    if (predicate.type != sql::PredicateType::COMPARISON ||
+                        predicate.values.size() != 1)
+                        throw SemanticError("aggregate HAVING supports one comparison value" + At(predicate.position));
+                    const auto& aggregate = *predicate.aggregate;
+                    if (aggregate.function == sql::AggregateFunction::COUNT ||
+                        aggregate.function == sql::AggregateFunction::SUM ||
+                        aggregate.function == sql::AggregateFunction::AVG) {
+                        if (predicate.values[0].type != Value::Type::INTEGER)
+                            throw SemanticError("aggregate comparison requires an integer value" + At(predicate.position));
+                    } else if (!aggregate.star &&
+                               !TypesMatch(resolve(aggregate.column)->type, predicate.values[0].type)) {
+                        throw SemanticError("aggregate comparison value has the wrong type" + At(predicate.position));
+                    }
+                    continue;
+                }
                 const auto* column = resolve(predicate.column);
-                if (!s->group_by.empty())
-                    require_grouped(predicate.column, "HAVING");
+                if (!s->group_by.empty()) require_grouped(predicate.column, "HAVING");
+                else if (has_aggregate)
+                    throw SemanticError("non-aggregate HAVING columns require GROUP BY" + At(predicate.position));
                 if (predicate.type == sql::PredicateType::COMPARISON ||
                     predicate.type == sql::PredicateType::LIKE) {
                     if (predicate.values.size() != 1)

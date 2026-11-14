@@ -949,133 +949,264 @@ bool SqlExecutor::ExecuteSelect(
             case sql::CompareOp::LE: return c<=0; case sql::CompareOp::GE: return c>=0; }
         return false;
     };
+    std::vector<std::vector<sql::Value>> result_rows;
     auto condition_matches = [&](const sql::Condition& condition, const std::vector<sql::Value>& row) {
-        if (condition.predicates.empty() || condition.connectors.size()+1 != condition.predicates.size()) return false;
-        auto one = [&](const sql::ConditionPredicate& p) {
-            std::size_t idx=0; if (!resolve(p.column, &idx) || idx >= row.size()) return false;
-            const auto& v=row[idx]; bool m=false;
-            // SQL comparisons against an outer-join NULL are UNKNOWN, so the
-            // row must not pass WHERE (even for a negated predicate).
-            if (v.type == sql::Value::Type::NULL_VALUE &&
-                p.type != sql::PredicateType::IS_NULL) return false;
-            switch(p.type) {
-                case sql::PredicateType::COMPARISON: m=p.values.size()==1 && value_compare(v,p.values[0],p.op); break;
-                case sql::PredicateType::IS_NULL: m=v.type==sql::Value::Type::NULL_VALUE; break;
+        if (condition.predicates.empty() || condition.connectors.size() + 1 != condition.predicates.size()) return false;
+        auto one = [&](const sql::ConditionPredicate& predicate) {
+            if (predicate.aggregate) return false;
+            std::size_t index = 0;
+            if (!resolve(predicate.column, &index) || index >= row.size()) return false;
+            const auto& value = row[index];
+            if (value.type == sql::Value::Type::NULL_VALUE && predicate.type != sql::PredicateType::IS_NULL) return false;
+            bool matches = false;
+            switch (predicate.type) {
+                case sql::PredicateType::COMPARISON:
+                    matches = predicate.values.size() == 1 && value_compare(value, predicate.values[0], predicate.op); break;
+                case sql::PredicateType::IS_NULL: matches = value.type == sql::Value::Type::NULL_VALUE; break;
                 case sql::PredicateType::LIKE:
-                    if (v.type==sql::Value::Type::STRING && p.values.size()==1 && p.values[0].type==sql::Value::Type::STRING)
-                        m=LikeMatches(v.string_value,p.values[0].string_value);
+                    matches = value.type == sql::Value::Type::STRING && predicate.values.size() == 1 &&
+                        predicate.values[0].type == sql::Value::Type::STRING &&
+                        LikeMatches(value.string_value, predicate.values[0].string_value); break;
+                case sql::PredicateType::IN:
+                    for (const auto& candidate : predicate.values)
+                        if (value.type != sql::Value::Type::NULL_VALUE && ValuesEqual(value, candidate)) { matches = true; break; }
                     break;
-                case sql::PredicateType::IN: {
-                    for (const auto& x : p.values) {
-                        if (v.type != sql::Value::Type::NULL_VALUE && ValuesEqual(v, x)) {
-                            m = true;
-                            break;
-                        }
-                    }
-                    break;
-                }
                 case sql::PredicateType::BETWEEN:
-                    m=p.values.size()==2 && value_compare(v,p.values[0],sql::CompareOp::GE) && value_compare(v,p.values[1],sql::CompareOp::LE); break;
+                    matches = predicate.values.size() == 2 && value_compare(value, predicate.values[0], sql::CompareOp::GE) &&
+                        value_compare(value, predicate.values[1], sql::CompareOp::LE); break;
             }
-            return p.negated ? !m : m;
+            return predicate.negated ? !matches : matches;
         };
-        bool group=true, result=false;
-        for(std::size_t i=0;i<condition.predicates.size();++i) {
-            group=group && one(condition.predicates[i]);
-            if(i+1==condition.predicates.size() || condition.connectors[i]==sql::LogicalOp::OR) {result=result||group;group=true;}
+        bool and_group = true, overall = false;
+        for (std::size_t i = 0; i < condition.predicates.size(); ++i) {
+            and_group = and_group && one(condition.predicates[i]);
+            if (i + 1 == condition.predicates.size() || condition.connectors[i] == sql::LogicalOp::OR) {
+                overall = overall || and_group; and_group = true;
+            }
         }
-        return result;
+        return overall;
     };
 
-    QueryResult result;
-    std::vector<std::size_t> projection;
-    if (statement.select_all) {
-        for (std::size_t i=0;i<width;++i) projection.push_back(i);
-    } else {
-        for (const auto& name : statement.columns) { std::size_t idx=0; if(!resolve(name,&idx)) return false; projection.push_back(idx); }
-    }
-    for (std::size_t idx : projection) {
-        std::string name;
-        for (const auto& relation : relations) {
-            if (idx >= relation.offset && idx < relation.offset + relation.schema->columns.size()) {
-                name = relation.schema->columns[idx-relation.offset].name; break;
+    auto evaluate_aggregate = [&](const sql::AggregateExpression& expression,
+                                  const std::vector<std::size_t>& members,
+                                  sql::Value* output) -> bool {
+        output->type = sql::Value::Type::NULL_VALUE;
+        std::size_t column_index = 0;
+        if (!expression.star && !resolve(expression.column, &column_index)) return false;
+        if (expression.function == sql::AggregateFunction::COUNT) {
+            std::int64_t count = 0;
+            for (const auto member : members) {
+                if (expression.star ||
+                    (column_index < result_rows[member].size() &&
+                     result_rows[member][column_index].type != sql::Value::Type::NULL_VALUE))
+                    ++count;
             }
+            output->type = sql::Value::Type::INTEGER;
+            output->int_value = count;
+            return true;
         }
-        result.column_names.push_back(name);
-    }
 
-    std::vector<std::vector<sql::Value>> result_rows;
+        bool seen = false;
+        std::int64_t total = 0;
+        sql::Value best;
+        for (const auto member : members) {
+            if (column_index >= result_rows[member].size()) continue;
+            const auto& value = result_rows[member][column_index];
+            if (value.type == sql::Value::Type::NULL_VALUE) continue;
+            if (expression.function == sql::AggregateFunction::SUM ||
+                expression.function == sql::AggregateFunction::AVG) {
+                if (value.type != sql::Value::Type::INTEGER) {
+                    SetError(error, "SUM and AVG require integer values");
+                    return false;
+                }
+                if ((value.int_value > 0 && total > std::numeric_limits<std::int64_t>::max() - value.int_value) ||
+                    (value.int_value < 0 && total < std::numeric_limits<std::int64_t>::min() - value.int_value)) {
+                    SetError(error, "aggregate result is out of range");
+                    return false;
+                }
+                total += value.int_value;
+            } else if (!seen) {
+                best = value;
+            } else {
+                const int comparison = value.type == sql::Value::Type::INTEGER
+                    ? (value.int_value < best.int_value ? -1 : value.int_value > best.int_value ? 1 : 0)
+                    : (value.string_value < best.string_value ? -1 : value.string_value > best.string_value ? 1 : 0);
+                if ((expression.function == sql::AggregateFunction::MIN && comparison < 0) ||
+                    (expression.function == sql::AggregateFunction::MAX && comparison > 0))
+                    best = value;
+            }
+            seen = true;
+        }
+        if (!seen) return true; // SQL empty/all-NULL aggregate result is NULL (except COUNT).
+        if (expression.function == sql::AggregateFunction::SUM) {
+            output->type = sql::Value::Type::INTEGER;
+            output->int_value = total;
+        } else if (expression.function == sql::AggregateFunction::AVG) {
+            output->type = sql::Value::Type::INTEGER;
+            std::size_t count = 0;
+            for (const auto member : members)
+                if (column_index < result_rows[member].size() &&
+                    result_rows[member][column_index].type != sql::Value::Type::NULL_VALUE) ++count;
+            output->int_value = count == 0 ? 0 : total / static_cast<std::int64_t>(count);
+        } else {
+            *output = std::move(best);
+        }
+        return true;
+    };
+
     result_rows.reserve(rows.size());
     for (const auto& row : rows) {
         if (!statement.where || condition_matches(*statement.where, row))
             result_rows.push_back(row);
     }
 
+    std::vector<sql::SelectItem> select_items = statement.select_items;
+    if (select_items.empty() && !statement.select_all) {
+        for (const auto& column : statement.columns)
+            select_items.push_back(sql::SelectItem{column, std::nullopt});
+    }
+    bool has_aggregate = false;
+    for (const auto& item : select_items) has_aggregate = has_aggregate || item.aggregate.has_value();
+    if (statement.having)
+        for (const auto& predicate : statement.having->predicates)
+            has_aggregate = has_aggregate || predicate.aggregate.has_value();
+
+    std::vector<std::vector<std::size_t>> groups;
     if (!statement.group_by.empty()) {
         std::vector<std::size_t> group_indices;
-        group_indices.reserve(statement.group_by.size());
         for (const auto& name : statement.group_by) {
             std::size_t index = 0;
             if (!resolve(name, &index)) return false;
             group_indices.push_back(index);
         }
-
         auto same_group = [&](const std::vector<sql::Value>& left,
                               const std::vector<sql::Value>& right) {
-            for (const std::size_t index : group_indices) {
+            for (const auto index : group_indices) {
                 if (index >= left.size() || index >= right.size()) return false;
-                const auto& a = left[index];
-                const auto& b = right[index];
+                const auto& a = left[index]; const auto& b = right[index];
                 if (a.type != b.type) return false;
                 if (a.type == sql::Value::Type::NULL_VALUE) continue;
                 if (a.type == sql::Value::Type::INTEGER) {
                     if (a.int_value != b.int_value) return false;
-                } else if (a.string_value != b.string_value) {
-                    return false;
-                }
+                } else if (a.string_value != b.string_value) return false;
             }
             return true;
         };
-
-        std::vector<std::vector<sql::Value>> grouped_rows;
-        grouped_rows.reserve(result_rows.size());
-        for (const auto& candidate : result_rows) {
-            const bool exists = std::any_of(
-                grouped_rows.begin(), grouped_rows.end(),
-                [&](const auto& existing) { return same_group(candidate, existing); });
-            if (!exists) grouped_rows.push_back(candidate);
+        for (std::size_t i = 0; i < result_rows.size(); ++i) {
+            auto found = std::find_if(groups.begin(), groups.end(), [&](const auto& group) {
+                return !group.empty() && same_group(result_rows[i], result_rows[group.front()]);
+            });
+            if (found == groups.end()) groups.push_back({i});
+            else found->push_back(i);
         }
-        result_rows = std::move(grouped_rows);
+    } else if (has_aggregate) {
+        std::vector<std::size_t> all;
+        for (std::size_t i = 0; i < result_rows.size(); ++i) all.push_back(i);
+        groups.push_back(std::move(all)); // aggregate over empty input still yields one row
+    } else {
+        for (std::size_t i = 0; i < result_rows.size(); ++i) groups.push_back({i});
     }
+
+    auto condition_matches_group = [&](const sql::Condition& condition,
+                                       const std::vector<std::size_t>& members) {
+        if (condition.predicates.empty() || condition.connectors.size() + 1 != condition.predicates.size()) return false;
+        const std::vector<sql::Value> empty_row;
+        const auto& row = members.empty() ? empty_row : result_rows[members.front()];
+        auto one = [&](const sql::ConditionPredicate& predicate) {
+            sql::Value value;
+            if (predicate.aggregate) {
+                if (!evaluate_aggregate(*predicate.aggregate, members, &value)) return false;
+            } else {
+                sql::Condition single;
+                single.predicates.push_back(predicate);
+                return condition_matches(single, row);
+            }
+            if (predicate.type != sql::PredicateType::COMPARISON || predicate.values.size() != 1)
+                return false;
+            return value_compare(value, predicate.values[0], predicate.op);
+        };
+        bool and_group = true, overall = false;
+        for (std::size_t i = 0; i < condition.predicates.size(); ++i) {
+            and_group = and_group && one(condition.predicates[i]);
+            if (i + 1 == condition.predicates.size() || condition.connectors[i] == sql::LogicalOp::OR) {
+                overall = overall || and_group;
+                and_group = true;
+            }
+        }
+        return overall;
+    };
 
     if (statement.having) {
-        result_rows.erase(
-            std::remove_if(result_rows.begin(), result_rows.end(),
-                [&](const auto& row) {
-                    return !condition_matches(*statement.having, row);
-                }),
-            result_rows.end());
+        groups.erase(std::remove_if(groups.begin(), groups.end(), [&](const auto& group) {
+            return !condition_matches_group(*statement.having, group);
+        }), groups.end());
+        if (error != nullptr && !error->empty()) return false;
     }
 
-    struct OutputRow {
-        std::vector<sql::Value> projected;
-        std::vector<sql::Value> sort_values;
-    };
+    QueryResult result;
+    std::vector<std::size_t> projection;
+    if (statement.select_all) {
+        for (std::size_t i = 0; i < width; ++i) projection.push_back(i);
+        for (std::size_t idx : projection) {
+            std::string name;
+            for (const auto& relation : relations)
+                if (idx >= relation.offset && idx < relation.offset + relation.schema->columns.size())
+                    name = relation.schema->columns[idx - relation.offset].name;
+            result.column_names.push_back(name);
+        }
+    } else {
+        for (const auto& item : select_items) {
+            if (item.aggregate) {
+                const auto& aggregate = *item.aggregate;
+                const char* fn = aggregate.function == sql::AggregateFunction::COUNT ? "COUNT" :
+                    aggregate.function == sql::AggregateFunction::SUM ? "SUM" :
+                    aggregate.function == sql::AggregateFunction::AVG ? "AVG" :
+                    aggregate.function == sql::AggregateFunction::MIN ? "MIN" : "MAX";
+                result.column_names.push_back(std::string(fn) + "(" + (aggregate.star ? "*" : aggregate.column) + ")");
+            } else {
+                std::size_t index = 0;
+                if (!resolve(item.column, &index)) return false;
+                projection.push_back(index);
+                const auto dot = item.column.find('.');
+                result.column_names.push_back(dot == std::string::npos ? item.column : item.column.substr(dot + 1));
+            }
+        }
+    }
+
+    struct OutputRow { std::vector<sql::Value> projected; std::vector<sql::Value> sort_values; };
     std::vector<std::size_t> order_indices;
-    order_indices.reserve(statement.order_by.size());
     for (const auto& item : statement.order_by) {
         std::size_t index = 0;
         if (!resolve(item.column, &index)) return false;
         order_indices.push_back(index);
     }
-
     std::vector<OutputRow> output_rows;
-    for (const auto& row : result_rows) {
+    for (const auto& group : groups) {
         OutputRow output;
-        output.projected.reserve(projection.size());
-        for (std::size_t idx : projection) output.projected.push_back(row[idx]);
-        output.sort_values.reserve(order_indices.size());
-        for (std::size_t idx : order_indices) output.sort_values.push_back(row[idx]);
+        const std::vector<sql::Value> empty_row;
+        const auto& representative = group.empty() ? empty_row : result_rows[group.front()];
+        if (statement.select_all) {
+            output.projected = representative;
+        } else {
+            std::size_t plain_index = 0;
+            for (const auto& item : select_items) {
+                if (item.aggregate) {
+                    sql::Value value;
+                    if (!evaluate_aggregate(*item.aggregate, group, &value)) return false;
+                    output.projected.push_back(std::move(value));
+                } else {
+                    if (plain_index >= projection.size() || projection[plain_index] >= representative.size()) {
+                        SetError(error, "cannot project a non-aggregate column from an empty aggregate group");
+                        return false;
+                    }
+                    output.projected.push_back(representative[projection[plain_index++]]);
+                }
+            }
+        }
+        for (const auto index : order_indices) {
+            if (index >= representative.size()) { SetError(error, "ORDER BY column unavailable"); return false; }
+            output.sort_values.push_back(representative[index]);
+        }
         output_rows.push_back(std::move(output));
     }
 
