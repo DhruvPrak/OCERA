@@ -58,6 +58,15 @@ private:
                  Peek().position);
         return Advance();
     }
+    std::string ParseOptionalTableAlias() {
+        if (IsKeyword(Peek(), "AS")) {
+            Advance();
+            return ExpectIdentifier("table alias").text;
+        }
+        if (Peek().type == TokenType::IDENTIFIER)
+            return Advance().text;
+        return {};
+    }
     std::string ParseColumnReference(std::size_t* position = nullptr) {
         const Token& first = ExpectIdentifier("column name");
         if (position) *position = first.position;
@@ -277,6 +286,7 @@ DropTableStatement ParseDrop() {
         }
         ExpectKeyword("FROM");
         s.table = ExpectIdentifier("table name").text;
+        s.table_alias = ParseOptionalTableAlias();
         while (IsJoinStart(Peek())) {
             s.joins.push_back(ParseJoinClause());
         }
@@ -373,6 +383,7 @@ DropTableStatement ParseDrop() {
         }
 
         join.table = ExpectIdentifier("joined table name").text;
+        join.alias = ParseOptionalTableAlias();
         if (join.type == JoinType::CROSS) {
             if (IsKeyword(Peek(), "ON"))
                 Fail("CROSS JOIN does not accept an ON clause", Peek().position);

@@ -307,32 +307,46 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
             CheckValueType(table.columns[i], s->values[i], At(s->values[i].position));
         }
     } else if (const auto* s = std::get_if<sql::SelectStatement>(&stmt)) {
-        std::vector<const TableSchema*> tables;
-        tables.push_back(&RequireTable(catalog, s->table));
+        struct SelectRelation {
+            const TableSchema* schema;
+            std::string qualifier;
+        };
+        std::vector<SelectRelation> relations;
+        std::set<std::string> qualifiers;
+        auto add_relation = [&](const std::string& table_name,
+                                const std::string& alias) {
+            const TableSchema& schema = RequireTable(catalog, table_name);
+            const std::string qualifier = alias.empty() ? schema.name : alias;
+            const std::string normalized = NormalizeIdentifier(qualifier);
+            if (!qualifiers.insert(normalized).second)
+                throw SemanticError("duplicate table qualifier '" + qualifier + "'");
+            relations.push_back({&schema, qualifier});
+        };
+        add_relation(s->table, s->table_alias);
         for (const auto& join : s->joins)
-            tables.push_back(&RequireTable(catalog, join.table));
+            add_relation(join.table, join.alias);
 
         auto resolve = [&](const std::string& reference) -> const ColumnSchema* {
             const auto dot = reference.find('.');
             if (dot != std::string::npos) {
                 const std::string table_name = reference.substr(0, dot);
                 const std::string column_name = reference.substr(dot + 1);
-                for (const auto* table : tables) {
-                    if (NormalizeIdentifier(table->name) == NormalizeIdentifier(table_name)) {
-                        const int index = table->ColumnIndex(column_name);
-                        if (index >= 0) return &table->columns[static_cast<std::size_t>(index)];
-                        throw SemanticError("table '" + table_name + "' has no column '" + column_name + "'");
+                for (const auto& relation : relations) {
+                    if (NormalizeIdentifier(relation.qualifier) == NormalizeIdentifier(table_name)) {
+                        const int index = relation.schema->ColumnIndex(column_name);
+                        if (index >= 0) return &relation.schema->columns[static_cast<std::size_t>(index)];
+                        throw SemanticError("table qualifier '" + table_name + "' has no column '" + column_name + "'");
                     }
                 }
                 throw SemanticError("unknown table qualifier '" + table_name + "'");
             }
             const ColumnSchema* found = nullptr;
-            for (const auto* table : tables) {
-                const int index = table->ColumnIndex(reference);
+            for (const auto& relation : relations) {
+                const int index = relation.schema->ColumnIndex(reference);
                 if (index >= 0) {
                     if (found != nullptr)
                         throw SemanticError("ambiguous column '" + reference + "'");
-                    found = &table->columns[static_cast<std::size_t>(index)];
+                    found = &relation.schema->columns[static_cast<std::size_t>(index)];
                 }
             }
             if (!found) throw SemanticError("unknown column '" + reference + "'");
@@ -395,9 +409,9 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
 
         if (!s->group_by.empty()) {
             if (s->select_all) {
-                for (const auto* table : tables)
-                    for (const auto& column : table->columns)
-                        require_grouped(table->name + "." + column.name, "SELECT");
+                for (const auto& relation : relations)
+                    for (const auto& column : relation.schema->columns)
+                        require_grouped(relation.qualifier + "." + column.name, "SELECT");
             } else if (!s->select_items.empty()) {
                 for (const auto& item : s->select_items)
                     if (!item.aggregate) require_grouped(item.column, "SELECT");

@@ -122,6 +122,7 @@ struct JoinCondition {
 struct JoinClause {
     JoinType type = JoinType::INNER;
     std::string table;
+    std::string alias;
     std::optional<JoinCondition> on;
     std::size_t position = 0;
 };
@@ -134,6 +135,7 @@ struct OrderByItem {
 
 struct SelectStatement {
     std::string table;
+    std::string table_alias;
     bool select_all = false;
     bool distinct = false;
     std::vector<std::string> columns; // legacy plain-column projection view

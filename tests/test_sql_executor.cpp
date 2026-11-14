@@ -816,6 +816,54 @@ assert(catalog.HasIndex("idx_empty_id"));
         assert(result.rows.size() == 1);
         assert(SameValue(result.rows[0][0], Int(5)));
 
+        std::cout << "[44a] Table aliases resolve across SELECT, JOIN, WHERE and ORDER BY\n";
+        assert(executor.Execute(
+            "SELECT e.emp_name, d.dept_name FROM employees AS e "
+            "JOIN departments d ON e.dept_id = d.dept_id "
+            "WHERE d.dept_name = 'Engineering' ORDER BY e.emp_name;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 2);
+        assert(SameValue(result.rows[0][0], Text("Alice")));
+        assert(SameValue(result.rows[1][0], Text("Dan")));
+
+        std::cout << "[44a-1] Aliases also resolve in GROUP BY and HAVING\n";
+        assert(executor.Execute(
+            "SELECT d.dept_name, COUNT(*) FROM employees e "
+            "JOIN departments d ON e.dept_id = d.dept_id "
+            "GROUP BY d.dept_name HAVING COUNT(*) > 1 ORDER BY d.dept_name;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 1);
+        assert(SameValue(result.rows[0][0], Text("Engineering")));
+        assert(SameValue(result.rows[0][1], Int(2)));
+
+        std::cout << "[44b] An alias hides the original table qualifier\n";
+        assert(!executor.Execute(
+            "SELECT employees.emp_name FROM employees e;",
+            nullptr, &error, &result));
+        assert(!error.empty());
+
+        std::cout << "[44c] Duplicate aliases are rejected\n";
+        assert(!executor.Execute(
+            "SELECT e.emp_name FROM employees e JOIN departments e "
+            "ON e.dept_id = e.dept_id;",
+            nullptr, &error, &result));
+        assert(!error.empty());
+
+        std::cout << "[44d] Self-join works with distinct aliases\n";
+        assert(executor.Execute(
+            "SELECT worker.emp_name, manager.emp_name FROM employees worker "
+            "JOIN employees manager ON worker.emp_id = manager.emp_id;",
+            nullptr, &error, &result));
+        assert(result.rows.size() == 4);
+        assert(SameValue(result.rows[0][0], Text("Alice")));
+        assert(SameValue(result.rows[0][1], Text("Alice")));
+
+        std::cout << "[44e] Unknown alias qualifiers are rejected\n";
+        assert(!executor.Execute(
+            "SELECT x.emp_name FROM employees e;",
+            nullptr, &error, &result));
+        assert(!error.empty());
+
         std::cout << "[45] ORDER BY sorts integer and text columns" << std::endl;
         assert(executor.Execute(
             "CREATE TABLE task4_sort (id INT, name TEXT, score INT);", nullptr, &error));

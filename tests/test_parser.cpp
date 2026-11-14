@@ -302,7 +302,7 @@ int main() {
 
     std::cout << "[19] Unexpected trailing tokens\n";
     before = g_failures;
-    Check(ParseFails("SELECT * FROM t extra"), "extra word");
+    Check(ParseFails("SELECT * FROM t extra junk"), "extra tokens after a valid bare table alias");
     Check(ParseFails("SELECT * FROM t; SELECT * FROM u"), "second statement after ';'");
     Check(ParseFails("SELECT * FROM t;;"), "double semicolon");
     Check(ParseFails("DELETE FROM t WHERE a = 1 b = 2"), "junk after WHERE");
@@ -509,6 +509,36 @@ int main() {
         Check(ParseFails("SELECT COUNT( FROM staff"), "malformed aggregate call rejected");
     }
     Report("aggregate expressions", before);
+
+    std::cout << "[26] Table aliases" << std::endl;
+    before = g_failures;
+    {
+        auto base_as = ParseAs<SelectStatement>(
+            "SELECT e.id FROM employees AS e");
+        Check(base_as.table == "employees" && base_as.table_alias == "e",
+              "base table alias with AS retained");
+
+        auto base_bare = ParseAs<SelectStatement>(
+            "SELECT e.id FROM employees e");
+        Check(base_bare.table == "employees" && base_bare.table_alias == "e",
+              "base table alias without AS retained");
+
+        auto joined = ParseAs<SelectStatement>(
+            "SELECT e.id FROM employees e JOIN departments AS d "
+            "ON e.dept_id = d.dept_id");
+        Check(joined.table_alias == "e" && joined.joins.size() == 1 &&
+              joined.joins[0].table == "departments" &&
+              joined.joins[0].alias == "d",
+              "joined table alias retained");
+
+        auto cross = ParseAs<SelectStatement>(
+            "SELECT e.id FROM employees e CROSS JOIN departments d");
+        Check(cross.joins.size() == 1 && cross.joins[0].alias == "d",
+              "CROSS JOIN alias retained");
+        Check(ParseFails("SELECT * FROM employees AS"),
+              "AS without an alias rejected");
+    }
+    Report("table aliases", before);
 
     if (g_failures == 0) {
         std::cout << "\nAll parser tests passed.\n";

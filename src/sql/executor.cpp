@@ -820,7 +820,11 @@ bool SqlExecutor::ExecuteSelect(
     try { Validate(sql::Statement{statement}, catalog_); }
     catch (const std::exception& exception) { SetError(error, exception.what()); return false; }
 
-    struct Relation { const TableSchema* schema; std::size_t offset; };
+    struct Relation {
+        const TableSchema* schema;
+        std::size_t offset;
+        std::string qualifier;
+    };
     std::vector<Relation> relations;
     std::vector<std::vector<sql::Value>> rows;
     std::size_t width = 0;
@@ -849,7 +853,7 @@ bool SqlExecutor::ExecuteSelect(
         const std::string column_name = dot == std::string::npos ? ref : ref.substr(dot + 1);
         bool found = false;
         for (const auto& relation : relations) {
-            if (dot != std::string::npos && NormalizeIdentifier(relation.schema->name) != NormalizeIdentifier(table_name)) continue;
+            if (dot != std::string::npos && NormalizeIdentifier(relation.qualifier) != NormalizeIdentifier(table_name)) continue;
             const int column = relation.schema->ColumnIndex(column_name);
             if (column < 0) continue;
             if (found) { SetError(error, "ambiguous column '" + ref + "'"); return false; }
@@ -861,7 +865,8 @@ bool SqlExecutor::ExecuteSelect(
 
     const TableSchema* base_schema = catalog_.GetTable(statement.table);
     if (!base_schema) { SetError(error, "table '" + statement.table + "' does not exist"); return false; }
-    relations.push_back({base_schema, 0});
+    relations.push_back({base_schema, 0,
+        statement.table_alias.empty() ? base_schema->name : statement.table_alias});
     width = base_schema->columns.size();
     if (!scan(statement.table, &rows)) return false;
 
@@ -871,7 +876,8 @@ bool SqlExecutor::ExecuteSelect(
         std::vector<std::vector<sql::Value>> right_rows;
         if (!scan(join.table, &right_rows)) return false;
         const std::size_t right_width = right_schema->columns.size();
-        relations.push_back({right_schema, width});
+        relations.push_back({right_schema, width,
+            join.alias.empty() ? right_schema->name : join.alias});
         std::size_t left_key = 0, right_key = 0;
         if (join.on) {
             if (!resolve(join.on->left_column, &left_key) ||
