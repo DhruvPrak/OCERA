@@ -540,6 +540,25 @@ int main() {
     }
     Report("table aliases", before);
 
+    std::cout << "[27] SELECT column aliases using AS" << std::endl;
+    before = g_failures;
+    {
+        auto plain = ParseAs<SelectStatement>(
+            "SELECT name AS employee_name FROM employees");
+        Check(plain.select_items.size() == 1 &&
+              plain.select_items[0].alias == "employee_name",
+              "plain SELECT alias retained");
+        auto aggregate = ParseAs<SelectStatement>(
+            "SELECT COUNT(*) AS employee_count FROM employees");
+        Check(aggregate.select_items.size() == 1 &&
+              aggregate.select_items[0].aggregate &&
+              aggregate.select_items[0].alias == "employee_count",
+              "aggregate SELECT alias retained");
+        Check(ParseFails("SELECT name AS FROM employees"),
+              "AS without a SELECT alias rejected");
+    }
+    Report("SELECT column aliases", before);
+
     if (g_failures == 0) {
         std::cout << "\nAll parser tests passed.\n";
         return 0;

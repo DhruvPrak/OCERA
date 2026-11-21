@@ -279,6 +279,10 @@ DropTableStatement ParseDrop() {
                     item.column = ParseColumnReference();
                     s.columns.push_back(item.column);
                 }
+                if (IsKeyword(Peek(), "AS")) {
+                    Advance();
+                    item.alias = ExpectIdentifier("SELECT column alias").text;
+                }
                 s.select_items.push_back(std::move(item));
                 if (IsSymbol(Peek(), ",")) { Advance(); continue; }
                 break;

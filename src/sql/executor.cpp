@@ -1168,13 +1168,17 @@ bool SqlExecutor::ExecuteSelect(
                     aggregate.function == sql::AggregateFunction::SUM ? "SUM" :
                     aggregate.function == sql::AggregateFunction::AVG ? "AVG" :
                     aggregate.function == sql::AggregateFunction::MIN ? "MIN" : "MAX";
-                result.column_names.push_back(std::string(fn) + "(" + (aggregate.star ? "*" : aggregate.column) + ")");
+                const std::string default_name =
+                    std::string(fn) + "(" + (aggregate.star ? "*" : aggregate.column) + ")";
+                result.column_names.push_back(item.alias.empty() ? default_name : item.alias);
             } else {
                 std::size_t index = 0;
                 if (!resolve(item.column, &index)) return false;
                 projection.push_back(index);
                 const auto dot = item.column.find('.');
-                result.column_names.push_back(dot == std::string::npos ? item.column : item.column.substr(dot + 1));
+                const std::string default_name =
+                    dot == std::string::npos ? item.column : item.column.substr(dot + 1);
+                result.column_names.push_back(item.alias.empty() ? default_name : item.alias);
             }
         }
     }

@@ -35,6 +35,7 @@ struct AggregateExpression {
 struct SelectItem {
     std::string column;
     std::optional<AggregateExpression> aggregate;
+    std::string alias;
 };
 
 struct Comparison {

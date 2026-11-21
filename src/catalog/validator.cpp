@@ -389,6 +389,14 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
                 column->type != ColumnType::INT)
                 throw SemanticError("SUM and AVG require an INT column" + At(aggregate.position));
         };
+        std::set<std::string> select_aliases;
+        for (const auto& item : s->select_items) {
+            if (!item.alias.empty() &&
+                !select_aliases.insert(NormalizeIdentifier(item.alias)).second) {
+                throw SemanticError("duplicate SELECT column alias '" +
+                                    item.alias + "'");
+            }
+        }
         bool has_aggregate = false;
         if (!s->select_items.empty()) {
             for (const auto& item : s->select_items) {

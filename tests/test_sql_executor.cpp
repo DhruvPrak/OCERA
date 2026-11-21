@@ -1023,6 +1023,28 @@ assert(catalog.HasIndex("idx_empty_id"));
         for (std::size_t i = 1; i < result.rows[0].size(); ++i)
             assert(result.rows[0][i].type == sql::Value::Type::NULL_VALUE);
 
+        std::cout << "[62] Plain SELECT aliases change output headings\n";
+        assert(executor.Execute(
+            "SELECT emp_name AS employee_name FROM employees;",
+            nullptr, &error, &result));
+        assert(result.column_names.size() == 1);
+        assert(result.column_names[0] == "employee_name");
+        assert(SameValue(result.rows[0][0], Text("Alice")));
+
+        std::cout << "[63] Aggregate SELECT aliases change output headings\n";
+        assert(executor.Execute(
+            "SELECT COUNT(*) AS employee_count FROM employees;",
+            nullptr, &error, &result));
+        assert(result.column_names.size() == 1);
+        assert(result.column_names[0] == "employee_count");
+        assert(SameValue(result.rows[0][0], Int(4)));
+
+        std::cout << "[64] Duplicate SELECT aliases are rejected\n";
+        assert(!executor.Execute(
+            "SELECT emp_name AS label, dept_id AS LABEL FROM employees;",
+            nullptr, &error, &result));
+        assert(!error.empty());
+
         std::cout << "[61] Aggregate validation rejects invalid arguments and mixed projections" << std::endl;
         assert(!executor.Execute("SELECT SUM(emp_name) FROM employees;", nullptr, &error, &result));
         assert(!error.empty());
