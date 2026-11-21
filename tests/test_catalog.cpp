@@ -224,6 +224,54 @@ int main() {
         Check(!Valid(Select("students", {}, bad), c), "malformed condition (connector count)");
         Condition empty;
         Check(!Valid(Select("students", {}, empty), c), "malformed condition (empty)");
+        // SELECT validation must reject malformed predicate structures too.
+        Condition malformed_is_null;
+        ConditionPredicate is_null_predicate;
+        is_null_predicate.type = PredicateType::IS_NULL;
+        is_null_predicate.column = "name";
+        is_null_predicate.values.push_back(Int(1));
+        malformed_is_null.predicates.push_back(is_null_predicate);
+
+        Check(!Valid(Select("students", {},
+                            malformed_is_null), c),
+              "SELECT WHERE IS NULL rejects unexpected values");
+
+        Condition empty_in;
+        ConditionPredicate in_predicate;
+        in_predicate.type = PredicateType::IN;
+        in_predicate.column = "id";
+        empty_in.predicates.push_back(in_predicate);
+
+        Check(!Valid(Select("students", {}, empty_in), c),
+              "SELECT WHERE IN rejects an empty value list");
+        // HAVING validation must also reject malformed predicate structures.
+        Condition malformed_having_is_null;
+        ConditionPredicate having_is_null_predicate;
+        having_is_null_predicate.type = PredicateType::IS_NULL;
+        having_is_null_predicate.column = "id";
+        having_is_null_predicate.values.push_back(Int(1));
+        malformed_having_is_null.predicates.push_back(
+            having_is_null_predicate);
+
+        SelectStatement having_is_null =
+            std::get<SelectStatement>(Select("students", {"id"}));
+        having_is_null.group_by.push_back("id");
+        having_is_null.having = malformed_having_is_null;
+        Check(!Valid(having_is_null, c),
+              "SELECT HAVING IS NULL rejects unexpected values");
+
+        Condition empty_having_in;
+        ConditionPredicate having_in_predicate;
+        having_in_predicate.type = PredicateType::IN;
+        having_in_predicate.column = "id";
+        empty_having_in.predicates.push_back(having_in_predicate);
+
+        SelectStatement having_in =
+            std::get<SelectStatement>(Select("students", {"id"}));
+        having_in.group_by.push_back("id");
+        having_in.having = empty_having_in;
+        Check(!Valid(having_in, c),
+              "SELECT HAVING IN rejects an empty value list");
     }
     Report("column / type checks", before);
 

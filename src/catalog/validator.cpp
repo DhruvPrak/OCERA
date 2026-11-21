@@ -473,9 +473,16 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
                     else if (column->type != sql::ColumnType::TEXT ||
                              predicate.values[0].type != sql::Value::Type::STRING)
                         throw SemanticError("LIKE requires TEXT values" + At(predicate.position));
+                } else if (predicate.type == sql::PredicateType::IS_NULL) {
+                    if (!predicate.values.empty())
+                        throw SemanticError("IS NULL does not accept values" +
+                                            At(predicate.position));
                 } else if (predicate.type == sql::PredicateType::IN) {
+                    if (predicate.values.empty())
+                        throw SemanticError("IN requires at least one value" +
+                                            At(predicate.position));
                     for (const auto& value : predicate.values)
-                        CheckValueType(*column, value, At(predicate.position));
+                        CheckValueType(*column, value, At(value.position));
                 } else if (predicate.type == sql::PredicateType::BETWEEN) {
                     if (predicate.values.size() != 2)
                         throw SemanticError("BETWEEN requires two values" + At(predicate.position));
@@ -518,9 +525,16 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
                     else if (column->type != sql::ColumnType::TEXT ||
                              predicate.values[0].type != sql::Value::Type::STRING)
                         throw SemanticError("LIKE requires TEXT values" + At(predicate.position));
+                } else if (predicate.type == sql::PredicateType::IS_NULL) {
+                    if (!predicate.values.empty())
+                        throw SemanticError("IS NULL does not accept values" +
+                                            At(predicate.position));
                 } else if (predicate.type == sql::PredicateType::IN) {
+                    if (predicate.values.empty())
+                        throw SemanticError("IN requires at least one value" +
+                                            At(predicate.position));
                     for (const auto& value : predicate.values)
-                        CheckValueType(*column, value, At(predicate.position));
+                        CheckValueType(*column, value, At(value.position));
                 } else if (predicate.type == sql::PredicateType::BETWEEN) {
                     if (predicate.values.size() != 2)
                         throw SemanticError("BETWEEN requires two values" + At(predicate.position));
