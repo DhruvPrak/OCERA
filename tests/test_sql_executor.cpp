@@ -1039,6 +1039,47 @@ assert(catalog.HasIndex("idx_empty_id"));
         assert(result.column_names[0] == "employee_count");
         assert(SameValue(result.rows[0][0], Int(4)));
 
+        std::cout << "[65] Current date/time projections use local clock values\n";
+        assert(executor.Execute(
+            "SELECT CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP FROM employees;",
+            nullptr, &error, &result));
+        assert(result.column_names.size() == 3);
+        assert(result.column_names[0] == "CURRENT_DATE");
+        assert(result.column_names[1] == "CURRENT_TIME");
+        assert(result.column_names[2] == "CURRENT_TIMESTAMP");
+        assert(result.rows.size() == 4);
+        const auto date_value = result.rows[0][0].string_value;
+        const auto time_value = result.rows[0][1].string_value;
+        const auto timestamp_value = result.rows[0][2].string_value;
+        assert(result.rows[0][0].type == sql::Value::Type::STRING);
+        assert(result.rows[0][1].type == sql::Value::Type::STRING);
+        assert(result.rows[0][2].type == sql::Value::Type::STRING);
+        assert(date_value.size() == 10 && date_value[4] == '-' && date_value[7] == '-');
+        assert(time_value.size() == 8 && time_value[2] == ':' && time_value[5] == ':');
+        assert(timestamp_value == date_value + " " + time_value);
+        for (const auto& row : result.rows) {
+            assert(row[0].string_value == date_value);
+            assert(row[1].string_value == time_value);
+            assert(row[2].string_value == timestamp_value);
+        }
+
+        std::cout << "[66] Current date/time aliases are applied\n";
+        assert(executor.Execute(
+            "SELECT CURRENT_DATE AS today, CURRENT_TIMESTAMP AS query_time FROM employees;",
+            nullptr, &error, &result));
+        assert(result.column_names.size() == 2);
+        assert(result.column_names[0] == "today");
+        assert(result.column_names[1] == "query_time");
+
+        std::cout << "[67] Current date/time on an empty table returns headings and no rows\n";
+        assert(executor.Execute(
+            "CREATE TABLE task8_empty (id INT);", nullptr, &error));
+        assert(executor.Execute(
+            "SELECT CURRENT_DATE, CURRENT_TIME FROM task8_empty;",
+            nullptr, &error, &result));
+        assert(result.column_names.size() == 2);
+        assert(result.rows.empty());
+
         std::cout << "[64] Duplicate SELECT aliases are rejected\n";
         assert(!executor.Execute(
             "SELECT emp_name AS label, dept_id AS LABEL FROM employees;",

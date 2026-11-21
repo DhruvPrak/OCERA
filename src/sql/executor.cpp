@@ -1,8 +1,12 @@
 #include "sql/executor.h"
 
 #include <algorithm>
+#include <chrono>
+#include <ctime>
 #include <exception>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -24,6 +28,37 @@ void ClearError(std::string* error) {
     if (error != nullptr) {
         error->clear();
     }
+}
+
+
+struct CurrentDateTimeValues {
+    std::string date;
+    std::string time;
+    std::string timestamp;
+};
+
+bool CaptureCurrentDateTime(CurrentDateTimeValues* values) {
+    if (values == nullptr) return false;
+
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t time_value = std::chrono::system_clock::to_time_t(now);
+    std::tm local_time{};
+#ifdef _WIN32
+    if (localtime_s(&local_time, &time_value) != 0) return false;
+#else
+    if (localtime_r(&time_value, &local_time) == nullptr) return false;
+#endif
+
+    std::ostringstream date_stream;
+    date_stream << std::put_time(&local_time, "%Y-%m-%d");
+    std::ostringstream time_stream;
+    time_stream << std::put_time(&local_time, "%H:%M:%S");
+    if (!date_stream || !time_stream) return false;
+
+    values->date = date_stream.str();
+    values->time = time_stream.str();
+    values->timestamp = values->date + " " + values->time;
+    return true;
 }
 
 TableSchema MakeSchema(const sql::CreateTableStatement& statement) {
@@ -1069,8 +1104,17 @@ bool SqlExecutor::ExecuteSelect(
     std::vector<sql::SelectItem> select_items = statement.select_items;
     if (select_items.empty() && !statement.select_all) {
         for (const auto& column : statement.columns)
-            select_items.push_back(sql::SelectItem{column, std::nullopt});
+            select_items.push_back(sql::SelectItem{column, std::nullopt, std::nullopt, {}});
     }
+    bool needs_current_date_time = false;
+    for (const auto& item : select_items)
+        needs_current_date_time = needs_current_date_time || item.current_date_time.has_value();
+    CurrentDateTimeValues current_date_time;
+    if (needs_current_date_time && !CaptureCurrentDateTime(&current_date_time)) {
+        SetError(error, "failed to read the local system date and time");
+        return false;
+    }
+
     bool has_aggregate = false;
     for (const auto& item : select_items) has_aggregate = has_aggregate || item.aggregate.has_value();
     if (statement.having)
@@ -1162,7 +1206,13 @@ bool SqlExecutor::ExecuteSelect(
         }
     } else {
         for (const auto& item : select_items) {
-            if (item.aggregate) {
+            if (item.current_date_time) {
+                const char* name =
+                    *item.current_date_time == sql::CurrentDateTimeFunction::CURRENT_DATE ? "CURRENT_DATE" :
+                    *item.current_date_time == sql::CurrentDateTimeFunction::CURRENT_TIME ? "CURRENT_TIME" :
+                    "CURRENT_TIMESTAMP";
+                result.column_names.push_back(item.alias.empty() ? name : item.alias);
+            } else if (item.aggregate) {
                 const auto& aggregate = *item.aggregate;
                 const char* fn = aggregate.function == sql::AggregateFunction::COUNT ? "COUNT" :
                     aggregate.function == sql::AggregateFunction::SUM ? "SUM" :
@@ -1200,7 +1250,17 @@ bool SqlExecutor::ExecuteSelect(
         } else {
             std::size_t plain_index = 0;
             for (const auto& item : select_items) {
-                if (item.aggregate) {
+                if (item.current_date_time) {
+                    sql::Value value;
+                    value.type = sql::Value::Type::STRING;
+                    if (*item.current_date_time == sql::CurrentDateTimeFunction::CURRENT_DATE)
+                        value.string_value = current_date_time.date;
+                    else if (*item.current_date_time == sql::CurrentDateTimeFunction::CURRENT_TIME)
+                        value.string_value = current_date_time.time;
+                    else
+                        value.string_value = current_date_time.timestamp;
+                    output.projected.push_back(std::move(value));
+                } else if (item.aggregate) {
                     sql::Value value;
                     if (!evaluate_aggregate(*item.aggregate, group, &value)) return false;
                     output.projected.push_back(std::move(value));

@@ -559,6 +559,33 @@ int main() {
     }
     Report("SELECT column aliases", before);
 
+    std::cout << "[28] CURRENT_DATE, CURRENT_TIME and CURRENT_TIMESTAMP projections" << std::endl;
+    before = g_failures;
+    {
+        auto current = ParseAs<SelectStatement>(
+            "SELECT CURRENT_DATE, CURRENT_TIME AS clock, "
+            "CURRENT_TIMESTAMP AS query_time FROM employees");
+        Check(current.select_items.size() == 3, "three date/time projections parsed");
+        if (current.select_items.size() == 3) {
+            Check(current.select_items[0].current_date_time ==
+                      CurrentDateTimeFunction::CURRENT_DATE,
+                  "CURRENT_DATE expression retained");
+            Check(current.select_items[1].current_date_time ==
+                      CurrentDateTimeFunction::CURRENT_TIME &&
+                  current.select_items[1].alias == "clock",
+                  "CURRENT_TIME expression and alias retained");
+            Check(current.select_items[2].current_date_time ==
+                      CurrentDateTimeFunction::CURRENT_TIMESTAMP &&
+                  current.select_items[2].alias == "query_time",
+                  "CURRENT_TIMESTAMP expression and alias retained");
+        }
+        Check(ParseFails("SELECT CURRENT_DATE() FROM employees"),
+              "CURRENT_DATE does not accept parentheses");
+        Check(ParseFails("SELECT CURRENT_TIME(1) FROM employees"),
+              "CURRENT_TIME does not accept arguments");
+    }
+    Report("current date/time expressions", before);
+
     if (g_failures == 0) {
         std::cout << "\nAll parser tests passed.\n";
         return 0;

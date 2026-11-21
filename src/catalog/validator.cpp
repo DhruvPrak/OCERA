@@ -422,7 +422,8 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
                         require_grouped(relation.qualifier + "." + column.name, "SELECT");
             } else if (!s->select_items.empty()) {
                 for (const auto& item : s->select_items)
-                    if (!item.aggregate) require_grouped(item.column, "SELECT");
+                    if (!item.aggregate && !item.current_date_time)
+                        require_grouped(item.column, "SELECT");
             } else {
                 for (const auto& name : s->columns) require_grouped(name, "SELECT");
             }
@@ -436,7 +437,9 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
         if (has_aggregate && s->group_by.empty()) {
             const bool has_plain_projection = !s->select_items.empty() &&
                 std::any_of(s->select_items.begin(), s->select_items.end(),
-                    [](const auto& item) { return !item.aggregate.has_value(); });
+                    [](const auto& item) {
+                        return !item.aggregate.has_value() && !item.current_date_time.has_value();
+                    });
             if (has_plain_projection)
                 throw SemanticError("non-aggregate SELECT columns require GROUP BY");
         }

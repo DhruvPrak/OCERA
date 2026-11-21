@@ -25,6 +25,8 @@ enum class PredicateType { COMPARISON, IS_NULL, LIKE, IN, BETWEEN };
 
 enum class AggregateFunction { COUNT, SUM, AVG, MIN, MAX };
 
+enum class CurrentDateTimeFunction { CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP };
+
 struct AggregateExpression {
     AggregateFunction function = AggregateFunction::COUNT;
     std::string column;
@@ -35,6 +37,7 @@ struct AggregateExpression {
 struct SelectItem {
     std::string column;
     std::optional<AggregateExpression> aggregate;
+    std::optional<CurrentDateTimeFunction> current_date_time;
     std::string alias;
 };
 

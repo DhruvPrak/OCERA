@@ -240,6 +240,12 @@ DropTableStatement ParseDrop() {
                IsKeyword(token, "MAX");
     }
 
+    static bool IsCurrentDateTimeFunction(const Token& token) {
+        return IsKeyword(token, "CURRENT_DATE") ||
+               IsKeyword(token, "CURRENT_TIME") ||
+               IsKeyword(token, "CURRENT_TIMESTAMP");
+    }
+
     AggregateExpression ParseAggregateExpression() {
         const Token function = Advance();
         AggregateExpression expression;
@@ -275,6 +281,14 @@ DropTableStatement ParseDrop() {
                 SelectItem item;
                 if (IsAggregateFunction(Peek())) {
                     item.aggregate = ParseAggregateExpression();
+                } else if (IsCurrentDateTimeFunction(Peek())) {
+                    const Token function = Advance();
+                    if (function.text == "CURRENT_DATE")
+                        item.current_date_time = CurrentDateTimeFunction::CURRENT_DATE;
+                    else if (function.text == "CURRENT_TIME")
+                        item.current_date_time = CurrentDateTimeFunction::CURRENT_TIME;
+                    else
+                        item.current_date_time = CurrentDateTimeFunction::CURRENT_TIMESTAMP;
                 } else {
                     item.column = ParseColumnReference();
                     s.columns.push_back(item.column);
