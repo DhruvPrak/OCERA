@@ -27,7 +27,22 @@ static Comparison Cmp(const std::string& col, CompareOp op, const Value& v) {
     Comparison c; c.column = col; c.op = op; c.value = v; return c;
 }
 static Condition Where(std::vector<Comparison> cmps, std::vector<LogicalOp> conns = {}) {
-    Condition c; c.comparisons = std::move(cmps); c.connectors = std::move(conns); return c;
+    Condition c;
+    c.comparisons = cmps; // Keep the legacy AST inspection view populated.
+    c.connectors = std::move(conns);
+
+    // Validation and execution use the canonical ordered predicate list.
+    c.predicates.reserve(cmps.size());
+    for (const auto& comparison : cmps) {
+        ConditionPredicate predicate;
+        predicate.type = PredicateType::COMPARISON;
+        predicate.column = comparison.column;
+        predicate.op = comparison.op;
+        predicate.values.push_back(comparison.value);
+        predicate.position = comparison.position;
+        c.predicates.push_back(std::move(predicate));
+    }
+    return c;
 }
 static CreateTableStatement MakeCreate(const std::string& name,
                                        const std::vector<std::pair<std::string, ColumnType>>& cols) {
@@ -61,7 +76,18 @@ static Statement Insert(const std::string& t, std::vector<Value> vals) {
 }
 static Statement Select(const std::string& t, std::vector<std::string> cols,
                         std::optional<Condition> w = std::nullopt) {
-    SelectStatement s; s.table = t; s.select_all = cols.empty(); s.columns = std::move(cols); s.where = std::move(w); return s;
+    SelectStatement s;
+    s.table = t;
+    s.select_all = cols.empty();
+    s.columns = cols; // Keep the legacy plain-column projection view populated.
+    s.select_items.reserve(cols.size());
+    for (const auto& column : cols) {
+        SelectItem item;
+        item.column = column;
+        s.select_items.push_back(std::move(item));
+    }
+    s.where = std::move(w);
+    return s;
 }
 static Statement Update(const std::string& t, std::vector<std::pair<std::string, Value>> sets,
                         std::optional<Condition> w = std::nullopt) {
@@ -193,7 +219,8 @@ int main() {
         Check(Valid(Select("students", {}, Where({Cmp("id", CompareOp::EQ, Int(1)), Cmp("name", CompareOp::EQ, Str("a")),
                                                   Cmp("id", CompareOp::LT, Int(9))},
                                                  {LogicalOp::AND, LogicalOp::OR})), c), "valid 3-comparison AND/OR chain");
-        Condition bad; bad.comparisons = {Cmp("id", CompareOp::EQ, Int(1)), Cmp("id", CompareOp::EQ, Int(2))};  // missing connector
+        Condition bad = Where({Cmp("id", CompareOp::EQ, Int(1)),
+                               Cmp("id", CompareOp::EQ, Int(2))}); // missing connector
         Check(!Valid(Select("students", {}, bad), c), "malformed condition (connector count)");
         Condition empty;
         Check(!Valid(Select("students", {}, empty), c), "malformed condition (empty)");

@@ -349,7 +349,13 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
                     found = &relation.schema->columns[static_cast<std::size_t>(index)];
                 }
             }
-            if (!found) throw SemanticError("unknown column '" + reference + "'");
+            if (!found) {
+                if (relations.size() == 1) {
+                    throw SemanticError("table '" + relations.front().schema->name +
+                                        "' has no column '" + reference + "'");
+                }
+                throw SemanticError("unknown column '" + reference + "' in joined tables");
+            }
             return found;
         };
 
@@ -398,12 +404,15 @@ void Validate(const sql::Statement& stmt, const Catalog& catalog) {
             }
         }
         bool has_aggregate = false;
-        if (!s->select_items.empty()) {
-            for (const auto& item : s->select_items) {
-                if (item.aggregate) {
-                    has_aggregate = true;
-                    validate_aggregate(*item.aggregate);
-                }
+        for (const auto& item : s->select_items) {
+            if (item.aggregate) {
+                has_aggregate = true;
+                validate_aggregate(*item.aggregate);
+            } else if (!item.current_date_time) {
+                // Plain projection columns must be resolved even when the query
+                // has no GROUP BY clause. Otherwise SELECT unknown_column can
+                // pass semantic validation and fail only later during execution.
+                (void)resolve(item.column);
             }
         }
         if (s->having) {
