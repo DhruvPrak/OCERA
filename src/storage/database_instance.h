@@ -10,10 +10,12 @@
 #include "storage/buffer_pool_manager.h"
 #include "catalog/catalog.h"
 #include "sql/executor.h"
+#include "../wal/log_manager.h"
 
 namespace ocera {
 
-// Owns all runtime components associated with one open database.
+// Owns all runtime components associated with one open database. The WAL
+// path is the database path with ".wal" appended.
 //
 // Member declaration order is intentional:
 // dependencies are constructed first and destroyed last.
@@ -30,13 +32,18 @@ public:
 
     DiskManager& GetDiskManager();
     DatabaseHeader& GetDatabaseHeader();
+    LogManager& GetLogManager();
     BufferPoolManager& GetBufferPoolManager();
     Catalog& GetCatalog();
     SqlExecutor& GetExecutor();
 
 private:
-    // Keep this declaration order.
+    // Startup ordering is deliberate: bootstrap and validate the matching WAL
+    // before any component reads or writes database metadata pages. A future
+    // RecoveryManager belongs between log_manager_ and free_space_manager_.
     DiskManager disk_manager_;
+    DatabaseHeader::BootstrapResult bootstrap_result_;
+    LogManager log_manager_;
     FreeSpaceManager free_space_manager_;
     DatabaseHeader database_header_;
     BufferPoolManager buffer_pool_manager_;

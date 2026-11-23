@@ -174,6 +174,18 @@ target_link_libraries(ocera_sql_executor
         ocera_index
 )
 
+# Write-ahead log foundation
+add_library(ocera_wal
+    src/wal/log_manager.cpp
+)
+target_include_directories(ocera_wal PUBLIC src)
+
+add_executable(test_log_manager tests/test_log_manager.cpp)
+target_link_libraries(test_log_manager PRIVATE ocera_wal)
+
+add_executable(test_database_bootstrap tests/test_database_bootstrap.cpp)
+target_link_libraries(test_database_bootstrap PRIVATE ocera_storage ocera_wal)
+
 # Database lifecycle foundation.
 add_library(ocera_database_instance
     src/storage/database_instance.cpp
@@ -185,6 +197,7 @@ target_link_libraries(ocera_database_instance
     PUBLIC
         ocera_storage
         ocera_sql_executor
+        ocera_wal
 )
 
 add_executable(test_database_instance
