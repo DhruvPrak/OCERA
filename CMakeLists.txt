@@ -219,6 +219,10 @@ target_link_libraries(test_table_heap PRIVATE ocera_database_instance)
 add_executable(test_wal_recovery tests/test_wal_recovery.cpp)
 target_link_libraries(test_wal_recovery PRIVATE ocera_database_instance)
 
+# Abrupt child-process termination tests for WAL redo/undo guarantees.
+add_executable(test_wal_crash tests/test_wal_crash.cpp)
+target_link_libraries(test_wal_crash PRIVATE ocera_database_instance)
+
 add_executable(test_sql_executor
     tests/test_sql_executor.cpp
 )
