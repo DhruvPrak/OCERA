@@ -8,6 +8,7 @@
 #include "common/rid.h"
 #include "record/table_heap.h"
 #include "sql/ast.h"
+#include "txn/txn_types.h"
 
 namespace ocera {
 
@@ -16,34 +17,38 @@ namespace ocera {
 // Catalog-owned TableSchema pointer.
 class RecordTable {
 public:
-bool Scan(
-    std::vector<std::pair<RID, std::vector<sql::Value>>>* rows,
-    std::string* error = nullptr
-);
+    bool Scan(
+        std::vector<std::pair<RID, std::vector<sql::Value>>>* rows,
+        std::string* error = nullptr,
+        txn_id_t txn_id = 0
+    );
     RecordTable(const TableSchema& schema, TableHeap& heap);
 
     // Values must match the schema's column order and types.
     bool Insert(
         const std::vector<sql::Value>& values,
         RID* rid,
-        std::string* error = nullptr
+        std::string* error = nullptr,
+        txn_id_t txn_id = 0
     );
 
     // Decodes a stored row into schema-ordered SQL values.
     bool Get(
         const RID& rid,
         std::vector<sql::Value>* values,
-        std::string* error = nullptr
+        std::string* error = nullptr,
+        txn_id_t txn_id = 0
     );
 
     // Replaces a row only when encoding and the underlying heap update succeed.
     bool Update(
         const RID& rid,
         const std::vector<sql::Value>& values,
-        std::string* error = nullptr
+        std::string* error = nullptr,
+        txn_id_t txn_id = 0
     );
 
-    bool Delete(const RID& rid);
+    bool Delete(const RID& rid, txn_id_t txn_id = 0);
 
     const TableSchema& GetSchema() const { return schema_; }
 

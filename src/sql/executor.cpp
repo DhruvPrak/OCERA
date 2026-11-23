@@ -383,8 +383,10 @@ bool MatchesCondition(
 }  // namespace
 
 SqlExecutor::SqlExecutor(Catalog& catalog, BufferPoolManager& bpm,
-                         DatabaseHeader* database_header)
-    : catalog_(catalog), bpm_(bpm), database_header_(database_header) {
+                         DatabaseHeader* database_header,
+                         TransactionManager* transaction_manager)
+    : catalog_(catalog), bpm_(bpm), database_header_(database_header),
+      transaction_manager_(transaction_manager) {
     if (database_header_ == nullptr) return;
     std::string error;
     if (!CatalogStorage::Load(catalog_, bpm_, *database_header_, &error))
@@ -393,7 +395,8 @@ SqlExecutor::SqlExecutor(Catalog& catalog, BufferPoolManager& bpm,
         const TableSchema* schema = catalog_.GetTable(name);
         if (schema == nullptr || schema->first_page_id < 2)
             throw std::runtime_error("saved table has an invalid starting page: " + name);
-        auto heap = std::make_unique<TableHeap>(bpm_, schema->first_page_id);
+        auto heap = std::make_unique<TableHeap>(
+            bpm_, schema->first_page_id, transaction_manager_);
         auto record_table = std::make_unique<RecordTable>(*schema, *heap);
         TableRuntime runtime;
         runtime.heap = std::move(heap);
@@ -462,6 +465,65 @@ bool SqlExecutor::Execute(
         *query_result = QueryResult{};
     }
 
+    if (indexes_dirty_ && active_txn_id_ == INVALID_TXN_ID) {
+        std::string rebuild_error;
+        if (!RebuildIndexes(&rebuild_error)) {
+            SetError(error, "could not restore runtime indexes: " + rebuild_error);
+            return false;
+        }
+    }
+
+    if (std::get_if<sql::BeginTransactionStatement>(&statement) != nullptr) {
+        if (transaction_manager_ == nullptr) {
+            SetError(error, "transactions are unavailable on this SQL executor");
+            return false;
+        }
+        if (active_txn_id_ != INVALID_TXN_ID) {
+            SetError(error, "a transaction is already active on this SQL executor");
+            return false;
+        }
+        try {
+            active_txn_id_ = transaction_manager_->Begin();
+            return active_txn_id_ != INVALID_TXN_ID;
+        } catch (const std::exception& exception) {
+            SetError(error, "could not begin transaction: " +
+                            std::string(exception.what()));
+            return false;
+        }
+    }
+
+    if (std::get_if<sql::CommitTransactionStatement>(&statement) != nullptr) {
+        if (transaction_manager_ == nullptr || active_txn_id_ == INVALID_TXN_ID) {
+            SetError(error, "there is no active transaction to commit");
+            return false;
+        }
+        if (!transaction_manager_->Commit(active_txn_id_)) {
+            SetError(error, "transaction commit failed; transaction remains active");
+            return false;
+        }
+        active_txn_id_ = INVALID_TXN_ID;
+        return true;
+    }
+
+    if (std::get_if<sql::RollbackTransactionStatement>(&statement) != nullptr) {
+        if (transaction_manager_ == nullptr || active_txn_id_ == INVALID_TXN_ID) {
+            SetError(error, "there is no active transaction to roll back");
+            return false;
+        }
+        return AbortActiveTransaction(error);
+    }
+
+    // Catalog and schema changes are system operations, not transactional
+    // record changes. Reject them until their metadata/page allocation has
+    // transaction-aware undo semantics.
+    if (active_txn_id_ != INVALID_TXN_ID &&
+        (std::get_if<sql::CreateTableStatement>(&statement) != nullptr ||
+         std::get_if<sql::CreateIndexStatement>(&statement) != nullptr ||
+         std::get_if<sql::DropTableStatement>(&statement) != nullptr)) {
+        SetError(error, "DDL is not supported inside an explicit transaction");
+        return false;
+    }
+
     if (const auto* create =
             std::get_if<sql::CreateTableStatement>(&statement)) {
         return ExecuteCreate(*create, error);
@@ -474,7 +536,9 @@ bool SqlExecutor::Execute(
 
     if (const auto* insert =
             std::get_if<sql::InsertStatement>(&statement)) {
-        return ExecuteInsert(*insert, inserted_rid, error);
+        return ExecuteMutation([&]() {
+            return ExecuteInsert(*insert, inserted_rid, error);
+        }, error);
     }
 
     if (const auto* select =
@@ -489,12 +553,12 @@ bool SqlExecutor::Execute(
 
     if (const auto* update =
             std::get_if<sql::UpdateStatement>(&statement)) {
-        return ExecuteUpdate(*update, error);
+        return ExecuteMutation([&]() { return ExecuteUpdate(*update, error); }, error);
     }
 
     if (const auto* remove =
             std::get_if<sql::DeleteStatement>(&statement)) {
-        return ExecuteDelete(*remove, error);
+        return ExecuteMutation([&]() { return ExecuteDelete(*remove, error); }, error);
     }
 
     if (std::get_if<sql::ShowTablesStatement>(&statement) != nullptr) {
@@ -710,7 +774,8 @@ bool SqlExecutor::ExecuteCreate(
     bool runtime_registered = false;
 
     try {
-        auto heap = std::make_unique<TableHeap>(bpm_, first_page_id);
+        auto heap = std::make_unique<TableHeap>(
+            bpm_, first_page_id, transaction_manager_);
         auto record_table =
             std::make_unique<RecordTable>(MakeSchema(statement), *heap);
 
@@ -775,7 +840,7 @@ bool SqlExecutor::ExecuteInsert(
                                 "' has no runtime storage managed by this SQL executor");
             return false;
         }
-        return it->second.record_table->Scan(rows, scan_error);
+        return it->second.record_table->Scan(rows, scan_error, active_txn_id_);
     };
 
     try {
@@ -801,7 +866,7 @@ bool SqlExecutor::ExecuteInsert(
     const TableSchema* schema = catalog_.GetTable(statement.table);
     std::vector<std::pair<RID, std::vector<sql::Value>>> stored_rows;
     if (schema == nullptr ||
-        !table_it->second.record_table->Scan(&stored_rows, error)) {
+        !table_it->second.record_table->Scan(&stored_rows, error, active_txn_id_)) {
         if (schema == nullptr) SetError(error, "table schema is unavailable");
         return false;
     }
@@ -817,7 +882,7 @@ bool SqlExecutor::ExecuteInsert(
     RID new_rid;
 
     if (!table_it->second.record_table->Insert(
-            statement.values, &new_rid, error)) {
+            statement.values, &new_rid, error, active_txn_id_)) {
         return false;
     }
 
@@ -830,7 +895,7 @@ bool SqlExecutor::ExecuteInsert(
             !tree->second->Insert(
                 statement.values[static_cast<std::size_t>(column)].int_value,
                 new_rid)) {
-            table_it->second.record_table->Delete(new_rid);
+            table_it->second.record_table->Delete(new_rid, active_txn_id_);
             SetError(error, "failed to update index '" + index.name + "' after INSERT");
             return false;
         }
@@ -872,7 +937,7 @@ bool SqlExecutor::ExecuteSelect(
             return false;
         }
         std::vector<std::pair<RID, std::vector<sql::Value>>> stored;
-        if (!it->second.record_table->Scan(&stored, error)) return false;
+        if (!it->second.record_table->Scan(&stored, error, active_txn_id_)) return false;
         output->clear(); output->reserve(stored.size());
         for (auto& item : stored) output->push_back(std::move(item.second));
         return true;
@@ -1358,7 +1423,7 @@ bool SqlExecutor::ExecuteUpdate(
                                 "' has no runtime storage managed by this SQL executor");
             return false;
         }
-        return it->second.record_table->Scan(rows, scan_error);
+        return it->second.record_table->Scan(rows, scan_error, active_txn_id_);
     };
 
     try {
@@ -1390,7 +1455,7 @@ bool SqlExecutor::ExecuteUpdate(
 
     std::vector<std::pair<RID, std::vector<sql::Value>>> stored_rows;
 
-    if (!table_it->second.record_table->Scan(&stored_rows, error)) {
+    if (!table_it->second.record_table->Scan(&stored_rows, error, active_txn_id_)) {
         return false;
     }
 
@@ -1436,7 +1501,8 @@ bool SqlExecutor::ExecuteUpdate(
         }
 
         for (const auto& update : updates) {
-            if (!table_it->second.record_table->Update(update.first, update.second, error)) {
+            if (!table_it->second.record_table->Update(
+                    update.first, update.second, error, active_txn_id_)) {
                 if (error != nullptr && error->empty())
                     SetError(error, "failed to update a matching row");
                 return false;
@@ -1488,7 +1554,7 @@ bool SqlExecutor::ExecuteDelete(
                                 "' has no runtime storage managed by this SQL executor");
             return false;
         }
-        return it->second.record_table->Scan(rows, scan_error);
+        return it->second.record_table->Scan(rows, scan_error, active_txn_id_);
     };
 
     try {
@@ -1520,7 +1586,7 @@ bool SqlExecutor::ExecuteDelete(
 
     std::vector<std::pair<RID, std::vector<sql::Value>>> stored_rows;
 
-    if (!table_it->second.record_table->Scan(&stored_rows, error)) {
+    if (!table_it->second.record_table->Scan(&stored_rows, error, active_txn_id_)) {
         return false;
     }
 
@@ -1555,7 +1621,7 @@ bool SqlExecutor::ExecuteDelete(
             const auto stored = std::find_if(
                 stored_rows.begin(), stored_rows.end(),
                 [&](const auto& row) { return row.first == rid; });
-            if (!table_it->second.record_table->Delete(rid)) {
+            if (!table_it->second.record_table->Delete(rid, active_txn_id_)) {
                 SetError(error, "failed to delete a matching row");
                 return false;
             }
@@ -1579,6 +1645,95 @@ bool SqlExecutor::ExecuteDelete(
         SetError(error, exception.what());
         return false;
     }
+}
+
+bool SqlExecutor::RebuildIndexes(std::string* error) {
+    bool rebuild_succeeded = true;
+    std::string rebuild_error;
+
+    auto rebuild = [&]() {
+        std::map<std::string, std::unique_ptr<BPlusTree>> rebuilt;
+        for (const auto& index : catalog_.Indexes()) {
+            std::unique_ptr<BPlusTree> tree;
+            if (!BuildIndexTree(index.table_name, index.column_name, &tree,
+                                &rebuild_error)) {
+                rebuild_succeeded = false;
+                return;
+            }
+            const auto inserted = rebuilt.emplace(
+                NormalizeIdentifier(index.name), std::move(tree));
+            if (!inserted.second) {
+                rebuild_error = "duplicate runtime index registration for '" +
+                                index.name + "'";
+                rebuild_succeeded = false;
+                return;
+            }
+        }
+        indexes_.swap(rebuilt);
+    };
+
+    // An abort can finish while another transaction is still active. Do not
+    // scan mutable pages in that case; defer rebuilding until the next idle
+    // executor call. RunWhenIdle also prevents a new BEGIN racing the rebuild.
+    if (transaction_manager_ != nullptr) {
+        if (!transaction_manager_->RunWhenIdle(rebuild)) {
+            indexes_dirty_ = true;
+            return true;
+        }
+    } else {
+        rebuild();
+    }
+
+    if (!rebuild_succeeded) {
+        indexes_.clear();
+        indexes_dirty_ = true;
+        SetError(error, rebuild_error);
+        return false;
+    }
+
+    indexes_dirty_ = false;
+    return true;
+}
+
+bool SqlExecutor::AbortActiveTransaction(std::string* error) {
+    if (transaction_manager_ == nullptr ||
+        active_txn_id_ == INVALID_TXN_ID) {
+        SetError(error, "there is no active transaction to roll back");
+        return false;
+    }
+
+    if (!transaction_manager_->Abort(active_txn_id_)) {
+        SetError(error, "transaction rollback failed; transaction remains active");
+        return false;
+    }
+
+    active_txn_id_ = INVALID_TXN_ID;
+    std::string rebuild_error;
+    if (!RebuildIndexes(&rebuild_error)) {
+        SetError(error, "transaction rolled back, but index rebuild failed: " +
+                        rebuild_error);
+        return false;
+    }
+    return true;
+}
+
+bool SqlExecutor::ExecuteMutation(
+    const std::function<bool()>& operation,
+    std::string* error
+) {
+    if (operation()) return true;
+
+    // A failed multi-row mutation may have changed earlier rows. Abort the
+    // whole explicit transaction so the statement cannot leave partial data.
+    if (active_txn_id_ != INVALID_TXN_ID) {
+        const std::string operation_error = error == nullptr ? std::string{} : *error;
+        std::string rollback_error;
+        if (!AbortActiveTransaction(&rollback_error)) {
+            SetError(error, operation_error +
+                (operation_error.empty() ? "" : "; ") + rollback_error);
+        }
+    }
+    return false;
 }
 
 bool SqlExecutor::GetRowByRID(
@@ -1606,7 +1761,7 @@ bool SqlExecutor::GetRowByRID(
         return false;
     }
 
-    return table_it->second.record_table->Get(rid, values, error);
+    return table_it->second.record_table->Get(rid, values, error, active_txn_id_);
 }
 
 }  // namespace ocera

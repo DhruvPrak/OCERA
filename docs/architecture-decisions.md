@@ -21,7 +21,7 @@ This document records OCERA's architectural decisions, the reasoning behind them
 | P-04 | 2026-10-14 | Retain locks until transaction commit or abort, consistent with Strict Two-Phase Locking. | Helps prevent conflicting transactions from accessing locked resources before a transaction finishes. | Lock manager, transaction manager | Proposed — implemented in code; confirmation pending |
 | P-05 | 2026-10-14 | Select the youngest transaction, identified by the highest transaction ID, as the deadlock victim. | Provides a deterministic victim-selection rule. | Deadlock detector, transaction manager, lock manager | Proposed — implemented in code; confirmation pending |
 | P-06 | 2026-10-14 | Let the deadlock detector mark a victim while the victim's own worker performs transaction-manager cleanup. | Separates deadlock detection from transaction lifecycle cleanup. | Deadlock detector, transaction manager, lock manager | Proposed — implemented in code; confirmation pending |
-| P-07 | 2026-10-14 | Do not claim transaction rollback until an undo/recovery mechanism is implemented. | The current abort operation releases locks and records transaction state but does not restore modified page data. | Transaction manager, future WAL and recovery | Proposed — reflects current implementation limitation |
+| P-07 | 2026-10-14 | Do not claim transaction rollback until an undo/recovery mechanism is implemented. | Prevents overstating transaction guarantees. | Transaction manager, WAL and recovery | Implemented and exercised by WAL undo tests on `feature/wal-recovery`; broader SQL transaction integration remains incomplete |
 
 ## 3. Open Questions
 
@@ -32,7 +32,7 @@ The following items require review and explicit team agreement.
 - [ ] Define how the Buffer Pool Manager interacts with `DiskManager` and `FreeSpaceManager`.
 - [ ] Finalize B+Tree page layouts and interfaces with the storage and buffer-pool modules.
 - [ ] Define the supported SQL grammar and query execution scope.
-- [ ] Define WAL records, log-flush guarantees, checkpoint behavior, and undo/redo responsibilities before claiming durable commits or rollback.
+- [ ] Review the WAL/recovery implementation and decide whether to add checkpoint-based log truncation and persisted page LSNs. The current implementation retains and replays the complete WAL.
 - [ ] Decide whether joins are required project functionality or a stretch goal, considering the four-month deadline.
 - [ ] Confirm how transaction workers detect deadlock victim status and perform abort cleanup.
 - [ ] Confirm the expected database-file compatibility policy for future format versions.
@@ -65,7 +65,7 @@ This log distinguishes decisions evidenced by the current implementation from ch
 | C-02 | Database pages are fixed at 4096 bytes | `src/common/config.h` defines `PAGE_SIZE = 4096` | Storage, future Buffer Pool and page-based modules | Confirmed |
 | C-03 | Page ID 0 is reserved for the free-space bitmap and page ID 1 for the database header | Shared constants in `src/common/config.h`; storage implementation uses them | Storage, Catalog integration | Confirmed |
 | C-04 | `Page` is a zero-initialized raw byte array of `PAGE_SIZE`; invalid page ID is -1 | `src/common/page.h` | All page-based modules | Confirmed |
-| C-05 | Database header uses magic `MDB1`, format version 1, explicit field offsets | `src/storage/database_header.h/.cpp` | Storage, file compatibility, recovery | Confirmed |
+| C-05 | Database header uses magic `MDB1`, format version 2, explicit little-endian field offsets, a database identity, and a CRC | `src/storage/database_header.h/.cpp` | Storage, file compatibility, recovery | Confirmed current implementation |
 | C-06 | Free-space tracking currently uses one bitmap page, supporting up to 32,768 page IDs | `src/storage/free_space_manager.h` | Storage | Confirmed current limitation |
 | C-07 | DiskManager is the raw file-I/O boundary and exposes fixed-page read/write | `src/storage/disk_manager.h` | All higher layers | Confirmed |
 
@@ -80,7 +80,7 @@ This log distinguishes decisions evidenced by the current implementation from ch
 | P-05 | Use wait-for graph cycle detection for deadlocks | Directly demonstrates OS/DBMS deadlock concepts | Lock Manager, Transaction Manager | Proposed; wait-for graph and victim-marking hooks exist in `feature/concurrency`, but cycle-detection implementation is not verified |
 | P-06 | Limit SQL to basic single-table CRUD and simple predicates; joins are stretch | Protect four-month scope | SQL, executor, tests | Proposed |
 | P-07 | Define a minimal record/table-page format and a Catalog before B+Tree/SQL integration | These formats are not implemented yet | Tables, Catalog, B+Tree, SQL | Proposed |
-| P-08 | Use an append-only WAL with explicit LSNs and write-ahead flush ordering | Small initial durability design | WAL, Buffer Pool, Transaction Manager | Proposed |
+| P-08 | Use an append-only WAL with explicit LSNs, full-page before/after images, WAL-before-page flush ordering, durable commit, and full-log redo/undo recovery | Small initial durability design without changing persisted page formats | WAL, Buffer Pool, Transaction Manager, Recovery | Implemented on `feature/wal-recovery`; team acceptance/review remains separate |
 | P-09 | Keep public cross-module APIs in `docs/api-contracts.md` and update them in the same PR as signature changes | Reduce parallel integration mismatch | All | Proposed process; follow unless team objects |
 
 ## Open questions — team must decide
@@ -90,7 +90,7 @@ This log distinguishes decisions evidenced by the current implementation from ch
 - [ ] B+Tree: key type, duplicate keys, node layout, root updates and index persistence.
 - [ ] SQL: exact grammar subset, supported operators, result representation and error handling.
 - [ ] Concurrency: lock granularity, whether conflicting lock requests block, transaction states, strict vs. basic 2PL, deadlock victim policy.
-- [ ] Durability: WAL record format, before/after image strategy, redo/undo scope, commit flush policy, page LSNs, checkpoint algorithm and recovery startup sequence.
+- [ ] Durability follow-up: checkpoint-based WAL truncation, persisted page LSNs, and reducing full-log replay cost. Current implementation retains the complete WAL and replays it at every open.
 - [ ] Header format: byte order and compatibility policy for future versions; avoid changing version 1 layout without a documented versioning plan.
 - [ ] Team timing: WAL/recovery ownership and the Month 4 integration handoff must be confirmed by all three teammates.
 

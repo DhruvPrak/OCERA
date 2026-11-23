@@ -6,7 +6,8 @@ namespace ocera {
 
 bool TableHeap::Create(
     BufferPoolManager& bpm,
-    page_id_t* first_page_id
+    page_id_t* first_page_id,
+    txn_id_t txn_id
 ) {
     if (first_page_id == nullptr) {
         return false;
@@ -22,12 +23,12 @@ bool TableHeap::Create(
     }
 
     if (!RecordPage::Init(page)) {
-        bpm.UnpinPage(page_id, true);
+        bpm.UnpinPage(page_id, true, txn_id);
         bpm.DeletePage(page_id);
         return false;
     }
 
-    if (!bpm.UnpinPage(page_id, true)) {
+    if (!bpm.UnpinPage(page_id, true, txn_id)) {
         return false;
     }
 
@@ -37,14 +38,24 @@ bool TableHeap::Create(
 
 TableHeap::TableHeap(
     BufferPoolManager& bpm,
-    page_id_t first_page_id
+    page_id_t first_page_id,
+    TransactionManager* transaction_manager
 )
     : bpm_(bpm),
-      first_page_id_(first_page_id) {
+      first_page_id_(first_page_id),
+      transaction_manager_(transaction_manager) {
+}
+
+bool TableHeap::AcquirePageLock(page_id_t page_id, txn_id_t txn_id,
+                                LockMode mode) const {
+    return txn_id == INVALID_TXN_ID || transaction_manager_ == nullptr ||
+           transaction_manager_->Lock(txn_id, page_id, mode);
 }
 
 Page* TableHeap::FetchPageInHeap(
-    page_id_t target_page_id
+    page_id_t target_page_id,
+    txn_id_t txn_id,
+    LockMode target_mode
 ) const {
     if (first_page_id_ < 2 || target_page_id < 2) {
         return nullptr;
@@ -55,6 +66,12 @@ Page* TableHeap::FetchPageInHeap(
 
     while (current_id != INVALID_PAGE_ID) {
         if (!visited.insert(current_id).second) {
+            return nullptr;
+        }
+
+        const LockMode mode = current_id == target_page_id
+            ? target_mode : LockMode::Shared;
+        if (!AcquirePageLock(current_id, txn_id, mode)) {
             return nullptr;
         }
 
@@ -88,7 +105,8 @@ Page* TableHeap::FetchPageInHeap(
 
 bool TableHeap::Insert(
     const std::vector<std::uint8_t>& record,
-    RID* rid
+    RID* rid,
+    txn_id_t txn_id
 ) {
     if (rid == nullptr ||
         record.empty() ||
@@ -103,6 +121,10 @@ bool TableHeap::Insert(
 
     while (current_id != INVALID_PAGE_ID) {
         if (!visited.insert(current_id).second) {
+            return false;
+        }
+
+        if (!AcquirePageLock(current_id, txn_id, LockMode::Exclusive)) {
             return false;
         }
 
@@ -125,7 +147,7 @@ bool TableHeap::Insert(
                 record,
                 &inserted_rid)) {
 
-            if (!bpm_.UnpinPage(current_id, true)) {
+            if (!bpm_.UnpinPage(current_id, true, txn_id)) {
                 return false;
             }
 
@@ -168,6 +190,12 @@ bool TableHeap::Insert(
             return false;
         }
 
+        if (!AcquirePageLock(new_page_id, txn_id, LockMode::Exclusive)) {
+            bpm_.UnpinPage(new_page_id, false);
+            bpm_.DeletePage(new_page_id);
+            return false;
+        }
+
         bool new_page_ready =
             RecordPage::Init(new_page) &&
             RecordPage::Insert(
@@ -178,12 +206,12 @@ bool TableHeap::Insert(
             );
 
         if (!new_page_ready) {
-            bpm_.UnpinPage(new_page_id, true);
+            bpm_.UnpinPage(new_page_id, true, txn_id);
             bpm_.DeletePage(new_page_id);
             return false;
         }
 
-        if (!bpm_.UnpinPage(new_page_id, true)) {
+        if (!bpm_.UnpinPage(new_page_id, true, txn_id)) {
             return false;
         }
 
@@ -208,7 +236,7 @@ bool TableHeap::Insert(
             );
 
         const bool unpinned =
-            bpm_.UnpinPage(current_id, linked);
+            bpm_.UnpinPage(current_id, linked, txn_id);
 
         if (!linked || !unpinned) {
             // The new page is not reachable from the heap if linking
@@ -228,13 +256,14 @@ bool TableHeap::Insert(
 
 bool TableHeap::Get(
     const RID& rid,
-    std::vector<std::uint8_t>* record
+    std::vector<std::uint8_t>* record,
+    txn_id_t txn_id
 ) {
     if (record == nullptr) {
         return false;
     }
 
-    Page* page = FetchPageInHeap(rid.page_id);
+    Page* page = FetchPageInHeap(rid.page_id, txn_id, LockMode::Shared);
 
     if (page == nullptr) {
         return false;
@@ -251,9 +280,10 @@ bool TableHeap::Get(
 
 bool TableHeap::Update(
     const RID& rid,
-    const std::vector<std::uint8_t>& record
+    const std::vector<std::uint8_t>& record,
+    txn_id_t txn_id
 ) {
-    Page* page = FetchPageInHeap(rid.page_id);
+    Page* page = FetchPageInHeap(rid.page_id, txn_id, LockMode::Exclusive);
 
     if (page == nullptr) {
         return false;
@@ -263,13 +293,13 @@ bool TableHeap::Update(
         RecordPage::Update(page, rid.page_id, rid, record);
 
     const bool unpinned =
-        bpm_.UnpinPage(rid.page_id, success);
+        bpm_.UnpinPage(rid.page_id, success, txn_id);
 
     return success && unpinned;
 }
 
-bool TableHeap::Delete(const RID& rid) {
-    Page* page = FetchPageInHeap(rid.page_id);
+bool TableHeap::Delete(const RID& rid, txn_id_t txn_id) {
+    Page* page = FetchPageInHeap(rid.page_id, txn_id, LockMode::Exclusive);
 
     if (page == nullptr) {
         return false;
@@ -279,13 +309,14 @@ bool TableHeap::Delete(const RID& rid) {
         RecordPage::Delete(page, rid.page_id, rid);
 
     const bool unpinned =
-        bpm_.UnpinPage(rid.page_id, success);
+        bpm_.UnpinPage(rid.page_id, success, txn_id);
 
     return success && unpinned;
 }
 
 bool TableHeap::Scan(
-    std::vector<std::pair<RID, std::vector<std::uint8_t>>>* records
+    std::vector<std::pair<RID, std::vector<std::uint8_t>>>* records,
+    txn_id_t txn_id
 ) {
     if (records == nullptr || first_page_id_ < 2) {
         return false;
@@ -299,6 +330,10 @@ bool TableHeap::Scan(
 
         while (current_id != INVALID_PAGE_ID) {
             if (!visited.insert(current_id).second) {
+                return false;
+            }
+
+            if (!AcquirePageLock(current_id, txn_id, LockMode::Shared)) {
                 return false;
             }
 

@@ -6,6 +6,7 @@
 #include "disk_manager.h"
 #include "../common/config.h"
 #include "../common/database_id.h"
+#include "../wal/log_manager.h"
 
 namespace ocera {
 
@@ -25,7 +26,7 @@ public:
         bool migration_pending = false;
     };
 
-    explicit DatabaseHeader(DiskManager& disk_manager);
+    explicit DatabaseHeader(DiskManager& disk_manager, LogManager* log_manager = nullptr);
 
     // Must run immediately after DiskManager construction and before
     // FreeSpaceManager. It initializes the reserved bitmap for a new file,
@@ -47,10 +48,12 @@ public:
 
 private:
     DiskManager& disk_manager_;
+    LogManager* log_manager_;
     std::uint32_t version_ = 0;
     std::uint32_t page_size_ = 0;
     page_id_t catalog_root_page_id_ = INVALID_PAGE_ID;
     DatabaseId database_id_{};
+    mutable bool healthy_ = true;
 
     void WriteDefaults();
     void Load();

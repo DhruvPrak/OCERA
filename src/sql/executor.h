@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -13,6 +14,7 @@
 #include "index/bplus_tree.h"
 #include "storage/buffer_pool_manager.h"
 #include "storage/database_header.h"
+#include "txn/transaction_manager.h"
 
 namespace ocera {
 
@@ -24,7 +26,8 @@ struct QueryResult {
 class SqlExecutor {
 public:
     SqlExecutor(Catalog& catalog, BufferPoolManager& bpm,
-                DatabaseHeader* database_header = nullptr);
+                DatabaseHeader* database_header = nullptr,
+                TransactionManager* transaction_manager = nullptr);
 
     bool Execute(
         const std::string& sql_text,
@@ -93,9 +96,17 @@ private:
         std::string* error
     );
 
+    bool RebuildIndexes(std::string* error);
+    bool AbortActiveTransaction(std::string* error);
+    bool ExecuteMutation(const std::function<bool()>& operation,
+                         std::string* error);
+
     Catalog& catalog_;
     BufferPoolManager& bpm_;
     DatabaseHeader* database_header_;
+    TransactionManager* transaction_manager_;
+    txn_id_t active_txn_id_ = INVALID_TXN_ID;
+    bool indexes_dirty_ = false;
     std::map<std::string, TableRuntime> tables_;
     std::map<std::string, std::unique_ptr<BPlusTree>> indexes_;
 };

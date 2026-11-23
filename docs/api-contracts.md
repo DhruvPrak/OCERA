@@ -1,6 +1,6 @@
 # OCERA — API Contracts Between Modules
 
-This document describes the public interfaces present on `feature/indexing-sql` and separates implemented functionality from proposals and missing integration work.
+This document describes the public interfaces present on `feature/wal-recovery` and separates implemented functionality from proposals and missing integration work.
 
 **Source of truth:** the headers, implementations, CMake configuration, and tests in the repository. A proposal in this document is not an implemented API or an approved architectural decision.
 
@@ -34,26 +34,29 @@ Transaction types are declared in `src/txn/txn_types.h`:
 Header: `src/storage/disk_manager.h`
 
 ```cpp
-explicit DiskManager(const std::string& db_file);
+explicit DiskManager(
+    const std::string& db_file,
+    DatabaseOpenMode mode = DatabaseOpenMode::CREATE_OR_OPEN);
 ~DiskManager();
 
 void ReadPage(page_id_t page_id, char* page_data);
 void WritePage(page_id_t page_id, const char* page_data);
+void Sync();
 page_id_t GetNumPages() const;
 ```
 
-- Opens or creates the database file.
-- Reads and writes one `PAGE_SIZE` page.
-- Unwritten pages are read as zero-filled buffers.
-- The implementation protects file operations with a mutex.
-- The manager is non-copyable.
+- `DatabaseOpenMode` supports `CREATE_NEW`, `OPEN_EXISTING`, and `CREATE_OR_OPEN`.
+- Reads and writes one `PAGE_SIZE` page; unwritten pages are zero-filled.
+- `WritePage()` flushes the C++ stream. `Sync()` additionally requests OS-level durable synchronization.
+- DiskManager remains the raw file-I/O boundary; higher layers enforce WAL ordering before persistent page writes.
 
 ### 2.2 FreeSpaceManager
 
 Header: `src/storage/free_space_manager.h`
 
 ```cpp
-explicit FreeSpaceManager(DiskManager& disk_manager);
+explicit FreeSpaceManager(DiskManager& disk_manager,
+                          LogManager* log_manager = nullptr);
 
 page_id_t AllocatePage();
 void DeallocatePage(page_id_t page_id);
@@ -62,8 +65,8 @@ bool IsAllocated(page_id_t page_id) const;
 
 - Page 0 stores the allocation bitmap; page 1 is reserved for the database header.
 - A single page-sized bitmap represents at most `PAGE_SIZE * 8` page IDs.
-- `AllocatePage()` throws `std::runtime_error` when the bitmap is full.
-- Callers must not deallocate reserved pages.
+- When supplied a LogManager, bitmap changes are logged as redo-only system updates and the log is synchronized before page 0 is written.
+- `AllocatePage()` throws `std::runtime_error` when the bitmap is full. Deallocation rejects reserved, out-of-range, and already-free page IDs.
 
 ### 2.3 DatabaseHeader
 
@@ -73,20 +76,26 @@ Current format constants:
 
 ```cpp
 static constexpr char kMagic[4] = {'M', 'D', 'B', '1'};
-static constexpr std::uint32_t kCurrentVersion = 1;
+static constexpr std::uint32_t kCurrentVersion = 2;
 ```
 
 Public interface:
 
 ```cpp
-explicit DatabaseHeader(DiskManager& disk_manager);
+explicit DatabaseHeader(DiskManager& disk_manager,
+                        LogManager* log_manager = nullptr);
 
 std::uint32_t GetVersion() const;
 std::uint32_t GetPageSize() const;
 page_id_t GetCatalogRootPageId() const;
+const DatabaseId& GetDatabaseId() const;
+void SetCatalogRootPageId(page_id_t page_id);
 ```
 
-Header fields are serialized at fixed offsets rather than by writing a raw C++ structure. The header stores file metadata; it does not implement crash recovery.
+- Page 1 stores explicit little-endian fields, a 128-bit database identity, and a CRC.
+- `Bootstrap()` runs before the WAL is opened. It initializes a new database or performs a journaled v1-to-v2 migration.
+- `CompleteBootstrap()` retires the migration journal only after the matching WAL opens.
+- Post-bootstrap header updates are redo-only WAL page updates. If the header is damaged after a logged update, the valid WAL header identity can be used to open the WAL and replay page 1 before normal header validation.
 
 ### 2.4 BufferPoolManager
 
@@ -95,36 +104,28 @@ Header: `src/storage/buffer_pool_manager.h`
 ```cpp
 BufferPoolManager(std::size_t pool_size,
                   DiskManager& disk_manager,
-                  FreeSpaceManager& free_space_manager);
+                  FreeSpaceManager& free_space_manager,
+                  LogManager* log_manager = nullptr);
 
 Page* FetchPage(page_id_t page_id);
-bool UnpinPage(page_id_t page_id, bool is_dirty);
+bool UnpinPage(page_id_t page_id, bool is_dirty,
+               std::uint64_t txn_id = 0);
 bool FlushPage(page_id_t page_id);
 void FlushAllPages();
 Page* NewPage(page_id_t* page_id);
 bool DeletePage(page_id_t page_id);
+bool UndoTransaction(std::uint64_t txn_id);
 ```
 
 **Lifetime and pinning contract**
 
-- `DiskManager` and `FreeSpaceManager` must outlive the buffer pool.
+- `DiskManager`, `FreeSpaceManager`, and the optional LogManager must outlive the buffer pool.
 - Successful `FetchPage()` and `NewPage()` calls return a pinned page.
-- The caller must call `UnpinPage()` exactly once for every successful fetch or allocation.
-- A `Page*` may be accessed only while its page remains pinned. Do not use the pointer after unpinning.
-- `UnpinPage(id, true)` marks the page dirty. Unpinning with `false` does not clear an existing dirty flag.
-- Unpinning an unknown page or a page with a zero pin count returns `false`.
-
-**Replacement, flushing, and concurrency**
-
-- LRU replacement is implemented; pinned frames cannot be evicted.
-- Pinned pages cannot be deleted.
-- Dirty pages are written during eviction, `FlushPage()`, or `FlushAllPages()`.
-- A dirty flag is cleared only after the corresponding write succeeds.
-- Flush operations may write pinned pages. Callers must prevent concurrent changes to page bytes while a page is being flushed.
-- The buffer-pool mutex protects internal metadata, not direct access to `Page::data`.
-- Higher layers must coordinate concurrent page-content access.
-- The buffer pool does not automatically flush all pages during destruction; explicitly flush when required.
-- WAL flush ordering is not implemented. Do not infer crash consistency from buffer-pool flushing.
+- The caller must unpin each successful fetch/allocation.
+- Page-byte mutations are detected at unpin. When a LogManager is configured, the buffer pool appends a full before/after `PAGE_UPDATE` and tracks the latest page LSN in frame metadata.
+- `txn_id == 0` marks a redo-only system update; nonzero IDs associate the update with a user transaction.
+- Dirty eviction and explicit flush synchronize WAL through the frame's page LSN before writing the database page.
+- Dirty pinned pages are not flushed; a flush attempt on one throws rather than racing with a caller mutating its page bytes.
 
 ## 3. Record and table storage
 
@@ -171,14 +172,21 @@ The byte layout is an implementation format in `record_page.cpp`; do not treat i
 Header: `src/record/table_heap.h`
 
 ```cpp
-static bool Create(BufferPoolManager& bpm, page_id_t* first_page_id);
+static bool Create(BufferPoolManager& bpm, page_id_t* first_page_id,
+                   txn_id_t txn_id = 0);
 
-TableHeap(BufferPoolManager& bpm, page_id_t first_page_id);
+TableHeap(BufferPoolManager& bpm, page_id_t first_page_id,
+          TransactionManager* transaction_manager = nullptr);
 
-bool Insert(const std::vector<std::uint8_t>& record, RID* rid);
-bool Get(const RID& rid, std::vector<std::uint8_t>* record);
-bool Update(const RID& rid, const std::vector<std::uint8_t>& record);
-bool Delete(const RID& rid);
+bool Insert(const std::vector<std::uint8_t>& record, RID* rid,
+            txn_id_t txn_id = 0);
+bool Get(const RID& rid, std::vector<std::uint8_t>* record,
+         txn_id_t txn_id = 0);
+bool Scan(std::vector<std::pair<RID, std::vector<std::uint8_t>>>* records,
+          txn_id_t txn_id = 0);
+bool Update(const RID& rid, const std::vector<std::uint8_t>& record,
+            txn_id_t txn_id = 0);
+bool Delete(const RID& rid, txn_id_t txn_id = 0);
 
 page_id_t GetFirstPageId() const;
 ```
@@ -188,8 +196,15 @@ page_id_t GetFirstPageId() const;
 - The heap traverses linked record pages and allocates another page when needed.
 - The caller must retain the first page ID to reopen the heap.
 - The implementation uses BufferPoolManager and RecordPage; callers must obey the buffer-pool pin/unpin contract.
-- The current implementation is not transaction-integrated and does not provide page-level latching or concurrent table operations.
-- A successful explicit buffer-pool flush followed by reopening was exercised by the TableHeap test. This is not a claim of crash-safe persistence or WAL recovery.
+- Mutating operations accept an optional transaction ID and pass it to BufferPoolManager when unpinning modified pages. Pass the active transaction's ID to make those page updates undoable by TransactionManager; the default 0 denotes a redo-only system update.
+- When constructed with a `TransactionManager*`, transactional reads acquire shared page locks and writes acquire exclusive page locks. Locks are retained by Strict 2PL until commit/abort. Traversal acquires locks from the first heap page toward the target; insert locks each candidate page exclusively and locks a newly allocated page before modifying it.
+- With no TransactionManager attached, TableHeap preserves its original unlocked behavior; callers using nonzero transaction IDs in that mode remain responsible for locking.
+
+### 3.3 RecordTable
+
+Header: `src/record/record_table.h`
+
+`RecordTable::Get()` and `RecordTable::Scan()` accept an optional transaction ID and forward it to `TableHeap`, just as `Insert()`, `Update()`, and `Delete()` forward IDs for writes. The underlying heap must have been constructed with the matching `TransactionManager` for automatic page locking.
 
 ## 4. Catalog and schema validation
 
@@ -341,13 +356,20 @@ std::size_t NumLocksHeld(txn_id_t txn_id) const;
 Header: `src/txn/transaction_manager.h`
 
 ```cpp
-explicit TransactionManager(LockManager& lock_manager);
+using UndoCallback = std::function<bool(txn_id_t)>;
+
+explicit TransactionManager(
+    LockManager& lock_manager,
+    LogManager* log_manager = nullptr,
+    UndoCallback undo_callback = {});
 
 txn_id_t Begin();
 bool Commit(txn_id_t txn_id);
 bool Abort(txn_id_t txn_id);
 bool Lock(txn_id_t txn_id, ResourceId resource, LockMode mode);
 bool GetState(txn_id_t txn_id, TransactionState* state) const;
+bool HasActiveTransactions() const;
+bool RunWhenIdle(const std::function<void()>& action);
 ```
 
 States are `Active`, `Committed`, and `Aborted`.
@@ -355,8 +377,10 @@ States are `Active`, `Committed`, and `Aborted`.
 - `Commit()` and `Abort()` finish an active transaction and release its locks.
 - `Lock()` acquires a lock only for an active transaction.
 - `GetState()` returns `false` for an unknown transaction.
-- `Abort()` currently changes transaction state and releases locks; it does not undo modified database pages.
-- Commit does not provide WAL-backed durability in the current implementation.
+- With a `LogManager`, `Begin()` appends BEGIN; `Commit()` appends and synchronizes COMMIT before releasing locks.
+- WAL-backed `Abort()` invokes the configured undo callback, appends and synchronizes ABORT, and only then releases locks. If undo or sync fails, it returns false and retains the transaction's locks.
+- `BufferPoolManager::UnpinPage(..., txn_id)` associates page updates with the transaction. `TableHeap` and `RecordTable` mutating methods accept an optional transaction ID and pass it through to page unpinning.
+- A standalone TransactionManager constructed without a LogManager preserves the earlier in-memory lifecycle behavior.
 
 ### 7.4 DeadlockDetector
 
@@ -382,18 +406,57 @@ std::size_t DeadlocksResolved() const;
 
 ## 8. WAL, checkpointing, and crash recovery
 
-**Status: not implemented in the reviewed branch snapshot.**
+**Status: implemented on `feature/wal-recovery`; verified by `test_wal_recovery`.**
 
-The following are requirements for future design, not current guarantees:
+Files:
+- `src/wal/log_manager.h/.cpp`
+- `src/storage/recovery_manager.h/.cpp`
+- WAL integration in `BufferPoolManager`, `FreeSpaceManager`, `DatabaseHeader`, `TransactionManager`, and `DatabaseInstance`
+- `tests/test_wal_recovery.cpp`
 
-- Log records and LSN assignment.
-- Write-ahead ordering between durable log records and dirty-page writes.
-- Commit durability.
-- Undo/redo recovery.
-- Checkpoint format and restart behavior.
-- Page LSNs and the required flush protocol.
+### Log format and guarantees
 
-Transaction abort currently releases locks and changes transaction state; it does not roll back page changes. Buffer-pool flushing alone must not be described as crash recovery.
+- WAL v2 has a database-identity-bound file header, monotonically increasing LSNs, and checksummed records.
+- Record types are `BEGIN`, `PAGE_UPDATE`, `COMMIT`, `ABORT`, and `CHECKPOINT`.
+- `PAGE_UPDATE` contains a full 4 KiB before-image followed by a full 4 KiB after-image.
+- Transaction ID 0 identifies redo-only system updates (page allocation bitmap, new-page initialization, and database-header changes). Nonzero IDs identify user transaction updates.
+- `LogManager::FlushUpTo(lsn)` uses an OS durability primitive (`fsync` on POSIX, `_commit` on Windows).
+- Buffer-pool dirty-page writes, bitmap writes, and header updates synchronize the relevant WAL records before writing the database page.
+- `TransactionManager::Commit()` synchronizes COMMIT before releasing strict-2PL locks.
+- `TransactionManager::Abort()` restores before-images in reverse LSN order, synchronizes ABORT, and only then releases locks.
+
+### Recovery algorithm
+
+- `RecoveryManager` runs after the database identity and matching WAL are validated, but before `FreeSpaceManager`, `DatabaseHeader`, and `BufferPoolManager` load database pages.
+- It synchronizes the WAL, redoes page updates in LSN order, undoes a transaction at its ABORT record, and undoes transactions still active at end-of-log.
+- After undoing an incomplete transaction, recovery appends and synchronizes an ABORT record. This makes the recovery decision durable and prevents a later restart from undoing that old transaction after newer commits.
+- Recovery is idempotent: a crash during recovery can be handled by replaying the same full log again.
+- Strict 2PL is required for the ordering rule used by undo: another transaction must not update a page before the previous writer commits or aborts.
+
+### Checkpoint policy and current limits
+
+- `DatabaseInstance::Checkpoint()` requires no active transactions, flushes dirty pages, synchronizes the database file, then appends and synchronizes a CHECKPOINT marker.
+- **The current checkpoint does not truncate or recycle the WAL.** Recovery deliberately replays the complete log; this avoids requiring persisted page LSNs or a more advanced checkpoint protocol.
+- Page LSNs are held only in buffer-pool frame metadata. They are not persisted in the on-disk page format.
+- `TableHeap` and `RecordTable` mutations can be associated with a transaction by passing its ID. Existing SQL executor operations currently use transaction ID 0 and are WAL-protected redo-only system operations; SQL statement execution is not yet automatically wrapped in user transactions.
+- Page allocation/deallocation metadata is logged as system updates. Transactional rollback of page allocation/deallocation itself is not implemented; an aborted operation that allocated a page may leave an unreachable allocated page.
+- This is a single-process educational recovery implementation, not ARIES and not a production crash-consistency claim. Full-log replay cost grows with WAL size.
+
+### Recovery tests
+
+`test_wal_recovery` covers committed update redo without a data-page flush, WAL-before-data flushing, loser transaction undo after restart, transactional `TableHeap` insert undo, runtime abort followed by a later committed writer to the same page, repeated recovery, and checkpoint behavior.
+
+### DatabaseInstance integration
+
+`DatabaseInstance` owns the LogManager, RecoveryManager, FreeSpaceManager, DatabaseHeader, BufferPoolManager, LockManager, and WAL-aware TransactionManager. Startup order is:
+
+1. Open DiskManager and run the database bootstrap/identity check.
+2. Open and validate the matching WAL.
+3. Run RecoveryManager before loading the bitmap, header, or buffer-pool pages.
+4. Construct the remaining database components.
+
+Public integration methods include `GetLogManager()`, `GetTransactionManager()`,
+`GetLockManager()`, `GetBufferPoolManager()`, `Flush()`, and `Checkpoint()`.
 
 ## 9. Schema-aware RecordSerializer
 
@@ -465,6 +528,8 @@ The current `CMakeLists.txt` defines these libraries:
 - `ocera_record`
 - `ocera_table_heap`
 - `ocera_record_serializer`
+- `ocera_wal`
+- `ocera_database_instance`
 
 It defines these executable targets:
 
@@ -483,6 +548,7 @@ It defines these executable targets:
 - `test_record_page`
 - `test_table_heap`
 - `test_record_serializer`
+- `test_wal_recovery`
 
 The current CMake file does not register these executables with CTest using `add_test()`. The `ocera_record_serializer` library and `test_record_serializer` executable are defined as build targets.
 

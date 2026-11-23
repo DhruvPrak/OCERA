@@ -586,6 +586,25 @@ int main() {
     }
     Report("current date/time expressions", before);
 
+    std::cout << "[29] Transaction control statements" << std::endl;
+    before = g_failures;
+    {
+        Check(std::holds_alternative<BeginTransactionStatement>(Parse("BEGIN;")),
+              "BEGIN parsed");
+        Check(std::holds_alternative<BeginTransactionStatement>(Parse("begin transaction")),
+              "BEGIN TRANSACTION parsed case-insensitively");
+        Check(std::holds_alternative<CommitTransactionStatement>(Parse("COMMIT;")),
+              "COMMIT parsed");
+        Check(std::holds_alternative<CommitTransactionStatement>(Parse("COMMIT TRANSACTION;")),
+              "COMMIT TRANSACTION parsed");
+        Check(std::holds_alternative<RollbackTransactionStatement>(Parse("ROLLBACK;")),
+              "ROLLBACK parsed");
+        Check(std::holds_alternative<RollbackTransactionStatement>(Parse("ROLLBACK TRANSACTION;")),
+              "ROLLBACK TRANSACTION parsed");
+        Check(ParseFails("BEGIN extra"), "unexpected transaction-control suffix rejected");
+    }
+    Report("transaction control statements", before);
+
     if (g_failures == 0) {
         std::cout << "\nAll parser tests passed.\n";
         return 0;

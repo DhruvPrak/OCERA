@@ -84,18 +84,18 @@ DiskManager::DiskManager(
     const auto size = static_cast<std::streamoff>(file_size);
 
     if (mode == DatabaseOpenMode::OPEN_EXISTING) {
-        if (size == 0) {
-            throw std::runtime_error(
-                "DiskManager: existing database file is empty"
-            );
-        }
-
-        if (size % static_cast<std::streamoff>(PAGE_SIZE) != 0) {
-            throw std::runtime_error(
-                "DiskManager: database file size is not page-aligned"
-            );
-        }
+    if (size == 0 && !fs::exists(file_name_ + ".upgrade")) {
+        throw std::runtime_error(
+            "DiskManager: existing database file is empty"
+        );
     }
+
+    if (size % static_cast<std::streamoff>(PAGE_SIZE) != 0) {
+        throw std::runtime_error(
+            "DiskManager: database file size is not page-aligned"
+        );
+    }
+}
 
     num_pages_ = static_cast<page_id_t>(
         size / static_cast<std::streamoff>(PAGE_SIZE)

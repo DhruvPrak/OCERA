@@ -11,7 +11,7 @@ OCERA means **Optimized Concurrent & Crash-Resilient Database Engine**. It is a 
 
 The goal is a credible, testable learning engine—not a production replacement for SQLite. The implementation must remain achievable within the four-month schedule.
 
-The project aims to support safe concurrent transactions and crash recovery without losing committed data. **WAL and crash recovery are planned features and are not implemented yet.**
+The project aims to demonstrate safe concurrent transactions and crash recovery without losing committed data. WAL and full-log redo/undo recovery are implemented on `feature/wal-recovery`; checkpoint-based WAL truncation and automatic SQL transaction wrapping remain incomplete.
 
 ## Current status
 
@@ -37,6 +37,14 @@ The bitmap uses one 4 KiB page and therefore tracks up to 32,768 page IDs (128 M
 
 These results describe the reviewed feature branches. They do not mean those implementations have already been merged into `main`.
 
+### Implemented on `feature/wal-recovery`, not yet integrated into `main`
+
+- WAL v2 with database identity, checksummed records, LSNs, and full-page before/after images.
+- WAL-before-data ordering for buffer-pool, free-space bitmap, and database-header writes.
+- Durable transaction begin/commit/abort hooks, before-image undo, and startup redo/undo recovery.
+- Synchronous checkpoint marker. The full WAL is retained and replayed; truncation is not implemented.
+- Crash/restart integration coverage in `tests/test_wal_recovery.cpp`. SQL executor operations still use redo-only system updates by default and are not automatically wrapped in user transactions.
+
 ### Not implemented or not yet verified
 
 - Buffer Pool Manager and LRU replacement.
@@ -45,7 +53,6 @@ These results describe the reviewed feature branches. They do not mean those imp
 - Full SQL parser and query execution.
 - Integration of the Transaction Manager and Lock Manager into `main`.
 - Verified deadlock cycle detection. The Lock Manager exposes wait-for graph and victim-marking hooks, but the actual cycle-detection implementation has not been verified.
-- Write-Ahead Logging (WAL), checkpointing and crash recovery.
 - End-to-end integration, benchmarks and final presentation.
 
 The `src/txn/README.md` and `src/sql/README.md` files describe module scope; their presence alone does not establish that complete modules have been integrated into `main`.

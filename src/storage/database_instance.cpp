@@ -15,15 +15,23 @@ DatabaseInstance::DatabaseInstance(
       log_manager_(db_file + ".wal", bootstrap_result_.database_id,
                    bootstrap_result_.allow_wal_creation,
                    bootstrap_result_.allow_wal_repair),
-      free_space_manager_(disk_manager_),
-      database_header_(disk_manager_),
+      recovery_manager_(disk_manager_, log_manager_),
+      free_space_manager_(disk_manager_, &log_manager_),
+      database_header_(disk_manager_, &log_manager_),
       buffer_pool_manager_(
           pool_size,
           disk_manager_,
-          free_space_manager_
+          free_space_manager_,
+          &log_manager_
       ),
+      lock_manager_(),
+      transaction_manager_(lock_manager_, &log_manager_,
+          [this](txn_id_t txn_id) {
+              return buffer_pool_manager_.UndoTransaction(txn_id);
+          }),
       catalog_(),
-      executor_(catalog_, buffer_pool_manager_, &database_header_) {
+      executor_(catalog_, buffer_pool_manager_, &database_header_,
+                &transaction_manager_) {
     DatabaseHeader::CompleteBootstrap(db_file);
 }
 
@@ -37,6 +45,23 @@ void DatabaseInstance::Flush() {
     disk_manager_.Sync();
 }
 
+void DatabaseInstance::Checkpoint() {
+    const bool completed = transaction_manager_.RunWhenIdle([this]() {
+        buffer_pool_manager_.FlushAllPages();
+        disk_manager_.Sync();
+
+        std::uint64_t checkpoint_lsn = 0;
+        if (!log_manager_.AppendCheckpoint(&checkpoint_lsn) ||
+            !log_manager_.FlushUpTo(checkpoint_lsn)) {
+            throw std::runtime_error("DatabaseInstance::Checkpoint: WAL sync failed: " +
+                                     log_manager_.GetLastError());
+        }
+    });
+    if (!completed) {
+        throw std::runtime_error("DatabaseInstance::Checkpoint: active transactions prevent checkpoint");
+    }
+}
+
 DiskManager& DatabaseInstance::GetDiskManager() {
     return disk_manager_;
 }
@@ -47,6 +72,14 @@ DatabaseHeader& DatabaseInstance::GetDatabaseHeader() {
 
 LogManager& DatabaseInstance::GetLogManager() {
     return log_manager_;
+}
+
+TransactionManager& DatabaseInstance::GetTransactionManager() {
+    return transaction_manager_;
+}
+
+LockManager& DatabaseInstance::GetLockManager() {
+    return lock_manager_;
 }
 
 BufferPoolManager& DatabaseInstance::GetBufferPoolManager() {

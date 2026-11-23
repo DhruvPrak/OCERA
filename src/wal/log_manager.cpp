@@ -172,10 +172,24 @@ bool LogManager::AppendRecordLocked(LogRecordType type, uint64_t txn_id,
     if (!healthy_ || !file_) return false;
     if (!ValidType(static_cast<uint8_t>(type))) return SetErrorLocked("invalid record type");
     if (payload.size() > kMaxPayloadSize) return SetErrorLocked("WAL payload exceeds maximum size");
-    if ((type == LogRecordType::PAGE_UPDATE &&
-         (payload.size() != 2U * PAGE_SIZE || page_id == INVALID_PAGE_ID)) ||
-        (type != LogRecordType::PAGE_UPDATE && !payload.empty()))
-        return SetErrorLocked("invalid payload for WAL record type");
+    if (type == LogRecordType::PAGE_UPDATE) {
+        if (payload.size() != 2U * PAGE_SIZE || page_id < 0 ||
+            page_id >= static_cast<page_id_t>(PAGE_SIZE * 8)) {
+            return SetErrorLocked("invalid PAGE_UPDATE page ID or payload");
+        }
+    } else {
+        if (!payload.empty() || page_id != INVALID_PAGE_ID) {
+            return SetErrorLocked("invalid payload or page ID for WAL record type");
+        }
+        if ((type == LogRecordType::BEGIN ||
+             type == LogRecordType::COMMIT ||
+             type == LogRecordType::ABORT) && txn_id == 0) {
+            return SetErrorLocked("transaction record has invalid transaction ID 0");
+        }
+        if (type == LogRecordType::CHECKPOINT && txn_id != 0) {
+            return SetErrorLocked("CHECKPOINT must use transaction ID 0");
+        }
+    }
     if (last_lsn_ == std::numeric_limits<uint64_t>::max()) return SetErrorLocked("LSN space exhausted");
 
     const uint64_t lsn = last_lsn_ + 1;
@@ -212,9 +226,10 @@ bool LogManager::AppendBegin(uint64_t txn, uint64_t* lsn) {
 bool LogManager::AppendPageUpdate(uint64_t txn, page_id_t page,
                                   const char* before_image, const char* after_image,
                                   uint64_t* lsn) {
-    if (!before_image || !after_image) {
+    if (page < 0 || page >= static_cast<page_id_t>(PAGE_SIZE * 8) ||
+        !before_image || !after_image) {
         std::lock_guard<std::mutex> lock(mutex_);
-        return SetErrorLocked("null page image");
+        return SetErrorLocked("invalid page ID or null page image");
     }
     std::vector<uint8_t> payload(2U * PAGE_SIZE);
     std::memcpy(payload.data(), before_image, PAGE_SIZE);
@@ -273,9 +288,14 @@ bool LogManager::ScanLocked(std::vector<LogRecord>* records, bool repair_tail) {
             return SetErrorLocked("WAL checksum mismatch at LSN " + std::to_string(lsn));
         const auto type = static_cast<LogRecordType>(raw_type);
         if ((type == LogRecordType::PAGE_UPDATE &&
-             (payload_len != 2U * PAGE_SIZE || page == INVALID_PAGE_ID)) ||
-            (type != LogRecordType::PAGE_UPDATE && payload_len != 0))
-            return SetErrorLocked("invalid WAL payload at LSN " + std::to_string(lsn));
+             (payload_len != 2U * PAGE_SIZE || page < 0 ||
+              page >= static_cast<page_id_t>(PAGE_SIZE * 8))) ||
+            (type != LogRecordType::PAGE_UPDATE &&
+             (payload_len != 0 || page != INVALID_PAGE_ID)) ||
+            ((type == LogRecordType::BEGIN || type == LogRecordType::COMMIT ||
+              type == LogRecordType::ABORT) && txn == 0) ||
+            (type == LogRecordType::CHECKPOINT && txn != 0))
+            return SetErrorLocked("invalid WAL payload or identity at LSN " + std::to_string(lsn));
         LogRecord record;
         record.type = type; record.lsn = lsn; record.txn_id = txn; record.page_id = page;
         record.payload.assign(bytes.begin() + kRecordHeaderSize, bytes.end());

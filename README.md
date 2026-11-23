@@ -18,7 +18,9 @@ OCERA is a small educational embedded database engine built in C++ to demonstrat
 - Bhavya: Transaction Manager and Lock Manager; tests passed on `feature/concurrency`.
 - Ishika: SQL tokenizer; tests passed on `feature/indexing-sql`.
 
-**Not yet implemented or verified:** Buffer Pool/LRU, B+Tree, full SQL parser/executor, verified deadlock cycle detection, WAL, checkpointing, crash recovery and full integration.
+**Implemented on `feature/wal-recovery` (not yet merged into `main`):** WAL v2, WAL-before-data page flushing, durable transaction begin/commit/abort hooks, full-log redo/undo recovery, and a synchronous checkpoint marker. The full WAL is retained (no truncation), and SQL statements are not yet automatically wrapped in user transactions.
+
+**Still requiring broader verification/integration:** end-to-end SQL transactions, verified deadlock cycle detection, full integration, benchmarks and crash testing across supported operating systems.
 
 ## Team ownership
 

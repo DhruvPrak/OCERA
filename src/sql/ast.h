@@ -174,11 +174,17 @@ struct DropTableStatement {
     std::string table;
 };
 
+struct BeginTransactionStatement {};
+struct CommitTransactionStatement {};
+struct RollbackTransactionStatement {};
+
 using Statement = std::variant<CreateTableStatement, CreateIndexStatement,
                                InsertStatement, SelectStatement,
                                UpdateStatement, DeleteStatement,
                                ShowTablesStatement, DescTableStatement,
-                               DropTableStatement>;
+                               DropTableStatement, BeginTransactionStatement,
+                               CommitTransactionStatement,
+                               RollbackTransactionStatement>;
 
 }  // namespace sql
 }  // namespace ocera

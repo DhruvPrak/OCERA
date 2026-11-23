@@ -33,7 +33,8 @@ RecordTable::RecordTable(
 bool RecordTable::Insert(
     const std::vector<sql::Value>& values,
     RID* rid,
-    std::string* error
+    std::string* error,
+    txn_id_t txn_id
 ) {
     ClearError(error);
 
@@ -49,7 +50,7 @@ bool RecordTable::Insert(
         return false;
     }
 
-    if (!heap_.Insert(encoded, rid)) {
+    if (!heap_.Insert(encoded, rid, txn_id)) {
         SetError(error, "TableHeap failed to insert the encoded record");
         return false;
     }
@@ -60,7 +61,8 @@ bool RecordTable::Insert(
 bool RecordTable::Get(
     const RID& rid,
     std::vector<sql::Value>* values,
-    std::string* error
+    std::string* error,
+    txn_id_t txn_id
 ) {
     ClearError(error);
 
@@ -70,7 +72,7 @@ bool RecordTable::Get(
     }
 
     std::vector<std::uint8_t> encoded;
-    if (!heap_.Get(rid, &encoded)) {
+    if (!heap_.Get(rid, &encoded, txn_id)) {
         SetError(error, "TableHeap could not retrieve the requested record");
         return false;
     }
@@ -83,7 +85,8 @@ bool RecordTable::Get(
 bool RecordTable::Update(
     const RID& rid,
     const std::vector<sql::Value>& values,
-    std::string* error
+    std::string* error,
+    txn_id_t txn_id
 ) {
     ClearError(error);
 
@@ -92,7 +95,7 @@ bool RecordTable::Update(
         return false;
     }
 
-    if (!heap_.Update(rid, encoded)) {
+    if (!heap_.Update(rid, encoded, txn_id)) {
         SetError(error, "TableHeap failed to update the requested record");
         return false;
     }
@@ -100,13 +103,14 @@ bool RecordTable::Update(
     return true;
 }
 
-bool RecordTable::Delete(const RID& rid) {
-    return heap_.Delete(rid);
+bool RecordTable::Delete(const RID& rid, txn_id_t txn_id) {
+    return heap_.Delete(rid, txn_id);
 }
 
 bool RecordTable::Scan(
     std::vector<std::pair<RID, std::vector<sql::Value>>>* rows,
-    std::string* error
+    std::string* error,
+    txn_id_t txn_id
 ) {
     ClearError(error);
 
@@ -117,7 +121,7 @@ bool RecordTable::Scan(
 
     std::vector<std::pair<RID, std::vector<std::uint8_t>>> encoded_rows;
 
-    if (!heap_.Scan(&encoded_rows)) {
+    if (!heap_.Scan(&encoded_rows, txn_id)) {
         SetError(error, "TableHeap failed to scan records");
         return false;
     }

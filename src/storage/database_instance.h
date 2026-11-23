@@ -11,6 +11,8 @@
 #include "catalog/catalog.h"
 #include "sql/executor.h"
 #include "../wal/log_manager.h"
+#include "storage/recovery_manager.h"
+#include "txn/transaction_manager.h"
 
 namespace ocera {
 
@@ -30,23 +32,31 @@ public:
     // Flush dirty buffer-pool pages before closing the database.
     void Flush();
 
+    // Synchronous checkpoint marker. The current recovery implementation
+    // retains the complete WAL, so checkpoints do not truncate log history.
+    void Checkpoint();
+
     DiskManager& GetDiskManager();
     DatabaseHeader& GetDatabaseHeader();
     LogManager& GetLogManager();
+    TransactionManager& GetTransactionManager();
+    LockManager& GetLockManager();
     BufferPoolManager& GetBufferPoolManager();
     Catalog& GetCatalog();
     SqlExecutor& GetExecutor();
 
 private:
-    // Startup ordering is deliberate: bootstrap and validate the matching WAL
-    // before any component reads or writes database metadata pages. A future
-    // RecoveryManager belongs between log_manager_ and free_space_manager_.
+    // Startup ordering is deliberate: bootstrap and validate the matching WAL,
+    // replay it, then construct components that load database metadata pages.
     DiskManager disk_manager_;
     DatabaseHeader::BootstrapResult bootstrap_result_;
     LogManager log_manager_;
+    RecoveryManager recovery_manager_;
     FreeSpaceManager free_space_manager_;
     DatabaseHeader database_header_;
     BufferPoolManager buffer_pool_manager_;
+    LockManager lock_manager_;
+    TransactionManager transaction_manager_;
     Catalog catalog_;
     SqlExecutor executor_;
 };

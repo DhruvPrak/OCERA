@@ -1,5 +1,8 @@
 #include "buffer_pool_manager.h"
 
+#include <algorithm>
+#include <array>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 
@@ -18,11 +21,13 @@ bool IsValidPageId(page_id_t page_id) {
 BufferPoolManager::BufferPoolManager(
     std::size_t pool_size,
     DiskManager& disk_manager,
-    FreeSpaceManager& free_space_manager
+    FreeSpaceManager& free_space_manager,
+    LogManager* log_manager
 )
     : pool_size_(pool_size),
       disk_manager_(disk_manager),
       free_space_manager_(free_space_manager),
+      log_manager_(log_manager),
       frames_(pool_size) {
     if (pool_size_ == 0) {
         throw std::invalid_argument(
@@ -110,7 +115,7 @@ bool BufferPoolManager::GetAvailableFrame(std::size_t* frame_id) {
 
     // Do not discard a dirty page unless its write succeeds.
     if (victim.is_dirty) {
-        disk_manager_.WritePage(victim.page_id, victim.page.data);
+        FlushFrame(victim);
     }
 
     page_table_.erase(victim.page_id);
@@ -174,6 +179,8 @@ Page* BufferPoolManager::FetchPage(page_id_t page_id) {
         frame.page_id = page_id;
         frame.pin_count = 1;
         frame.is_dirty = false;
+        frame.logged_image = frame.page;
+        frame.page_lsn = 0;
     } catch (...) {
         frame.page = Page{};
         frame.page_id = INVALID_PAGE_ID;
@@ -188,132 +195,141 @@ Page* BufferPoolManager::FetchPage(page_id_t page_id) {
 
 bool BufferPoolManager::UnpinPage(
     page_id_t page_id,
-    bool is_dirty
+    bool is_dirty,
+    std::uint64_t txn_id
 ) {
     std::lock_guard<std::mutex> lock(mutex_);
-
     const auto it = page_table_.find(page_id);
-    if (it == page_table_.end()) {
-        return false;
-    }
-
+    if (it == page_table_.end()) return false;
     const std::size_t frame_id = it->second;
     Frame& frame = frames_[frame_id];
+    if (frame.pin_count == 0) return false;
 
-    if (frame.pin_count == 0) {
-        return false;
-    }
+    auto release_pin = [&]() {
+        --frame.pin_count;
+        if (frame.pin_count == 0) {
+            try {
+                UpdateLRU(frame_id);
+            } catch (...) {
+                ++frame.pin_count;
+                throw;
+            }
+        }
+    };
 
-    if (is_dirty) {
+    const bool changed =
+        std::memcmp(frame.logged_image.data, frame.page.data, PAGE_SIZE) != 0;
+    if (changed) {
+        if (log_manager_) {
+            std::uint64_t lsn = 0;
+            if (!log_manager_->AppendPageUpdate(
+                    txn_id, page_id, frame.logged_image.data,
+                    frame.page.data, &lsn)) {
+                // The mutation has not been accepted: restore the last
+                // successfully logged image before releasing this pin.
+                frame.page = frame.logged_image;
+                release_pin();
+                return false;
+            }
+            frame.page_lsn = lsn;
+        } else if (txn_id != 0) {
+            frame.page = frame.logged_image;
+            release_pin();
+            return false;
+        }
+        frame.logged_image = frame.page;
+        frame.is_dirty = true;
+    } else if (is_dirty && !log_manager_) {
         frame.is_dirty = true;
     }
 
-    --frame.pin_count;
-
-    if (frame.pin_count == 0) {
-        try {
-            UpdateLRU(frame_id);
-        } catch (...) {
-            ++frame.pin_count;
-            throw;
-        }
-    }
-
+    release_pin();
     return true;
+}
+
+void BufferPoolManager::FlushFrame(Frame& frame) {
+    if (!frame.is_dirty) return;
+    if (frame.pin_count != 0)
+        throw std::runtime_error("BufferPoolManager: cannot flush a pinned page");
+    if (log_manager_ && frame.page_lsn != 0 &&
+        !log_manager_->FlushUpTo(frame.page_lsn)) {
+        throw std::runtime_error("BufferPoolManager: WAL sync failed: " +
+                                 log_manager_->GetLastError());
+    }
+    disk_manager_.WritePage(frame.page_id, frame.page.data);
+    frame.is_dirty = false;
 }
 
 bool BufferPoolManager::FlushPage(page_id_t page_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-
     const auto it = page_table_.find(page_id);
-    if (it == page_table_.end()) {
-        return false;
-    }
-
-    Frame& frame = frames_[it->second];
-
-    if (frame.is_dirty) {
-        disk_manager_.WritePage(page_id, frame.page.data);
-        frame.is_dirty = false;
-    }
-
+    if (it == page_table_.end()) return false;
+    FlushFrame(frames_[it->second]);
     return true;
 }
 
 void BufferPoolManager::FlushAllPages() {
     std::lock_guard<std::mutex> lock(mutex_);
-
     for (Frame& frame : frames_) {
-        if (frame.page_id == INVALID_PAGE_ID || !frame.is_dirty) {
-            continue;
-        }
-
-        disk_manager_.WritePage(frame.page_id, frame.page.data);
-        frame.is_dirty = false;
+        if (frame.page_id != INVALID_PAGE_ID && frame.is_dirty) FlushFrame(frame);
     }
 }
 
 Page* BufferPoolManager::NewPage(page_id_t* page_id) {
-    if (page_id == nullptr) {
-        return nullptr;
-    }
-
+    if (page_id == nullptr) return nullptr;
     *page_id = INVALID_PAGE_ID;
 
     std::lock_guard<std::mutex> lock(mutex_);
-
     const page_id_t new_page_id = free_space_manager_.AllocatePage();
-
     std::size_t frame_id = 0;
     bool frame_available = false;
-
     try {
         frame_available = GetAvailableFrame(&frame_id);
     } catch (...) {
-        try {
-            free_space_manager_.DeallocatePage(new_page_id);
-        } catch (...) {
-            // Preserve the original exception.
-        }
+        try { free_space_manager_.DeallocatePage(new_page_id); } catch (...) {}
         throw;
     }
-
     if (!frame_available) {
         free_space_manager_.DeallocatePage(new_page_id);
         return nullptr;
     }
 
     Frame& frame = frames_[frame_id];
-
+    std::array<char, PAGE_SIZE> before{};
     try {
+        disk_manager_.ReadPage(new_page_id, before.data());
         const auto inserted = page_table_.emplace(new_page_id, frame_id);
-        if (!inserted.second) {
-            throw std::logic_error(
-                "New page already exists in the buffer pool"
-            );
-        }
-    } catch (...) {
+        if (!inserted.second) throw std::logic_error("New page already exists in the buffer pool");
+
+        frame.page_id = new_page_id;
+        frame.pin_count = 1;
         frame.page = Page{};
+        std::memcpy(frame.logged_image.data, before.data(), PAGE_SIZE);
+        frame.page_lsn = 0;
+        frame.is_dirty = true;
+
+        if (log_manager_) {
+            std::uint64_t lsn = 0;
+            if (!log_manager_->AppendPageUpdate(
+                    0, new_page_id, before.data(), frame.page.data, &lsn)) {
+                throw std::runtime_error("BufferPoolManager: failed to log new page: " +
+                                         log_manager_->GetLastError());
+            }
+            frame.page_lsn = lsn;
+        }
+        frame.logged_image = frame.page;
+    } catch (...) {
+        page_table_.erase(new_page_id);
+        frame.page = Page{};
+        frame.logged_image = Page{};
         frame.page_id = INVALID_PAGE_ID;
         frame.pin_count = 0;
         frame.is_dirty = false;
+        frame.page_lsn = 0;
         free_frames_.push_back(frame_id);
-
-        try {
-            free_space_manager_.DeallocatePage(new_page_id);
-        } catch (...) {
-            // Preserve the original exception.
-        }
+        try { free_space_manager_.DeallocatePage(new_page_id); } catch (...) {}
         throw;
     }
-
-    frame.page = Page{};
-    frame.page_id = new_page_id;
-    frame.pin_count = 1;
-
-    // A reused page ID may still contain old bytes on disk. Mark the
-    // zero-initialized page dirty so eviction persists the cleared contents.
-    frame.is_dirty = true;
 
     *page_id = new_page_id;
     return &frame.page;
@@ -354,10 +370,50 @@ bool BufferPoolManager::DeletePage(page_id_t page_id) {
         frame.page_id = INVALID_PAGE_ID;
         frame.pin_count = 0;
         frame.is_dirty = false;
+        frame.logged_image = Page{};
+        frame.page_lsn = 0;
 
         free_frames_.push_back(frame_id);
     }
 
+    return true;
+}
+
+
+bool BufferPoolManager::RestorePage(page_id_t page_id, const char* image,
+                                    std::uint64_t lsn) {
+    if (!image || !IsValidPageId(page_id)) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = page_table_.find(page_id);
+    if (it == page_table_.end()) {
+        if (log_manager_ && !log_manager_->FlushUpTo(lsn)) return false;
+        disk_manager_.WritePage(page_id, image);
+        return true;
+    }
+    Frame& frame = frames_[it->second];
+    if (frame.pin_count != 0) return false;
+    std::memcpy(frame.page.data, image, PAGE_SIZE);
+    frame.logged_image = frame.page;
+    frame.page_lsn = std::max(frame.page_lsn, lsn);
+    frame.is_dirty = true;
+    return true;
+}
+
+bool BufferPoolManager::UndoTransaction(std::uint64_t txn_id) {
+    if (!log_manager_ || txn_id == 0) return false;
+    std::vector<LogRecord> records;
+    if (!log_manager_->Scan(&records)) return false;
+    try {
+        for (auto it = records.rbegin(); it != records.rend(); ++it) {
+            if (it->type != LogRecordType::PAGE_UPDATE || it->txn_id != txn_id) continue;
+            if (it->payload.size() != 2U * PAGE_SIZE ||
+                !RestorePage(it->page_id,
+                             reinterpret_cast<const char*>(it->payload.data()),
+                             it->lsn)) return false;
+        }
+    } catch (...) {
+        return false;
+    }
     return true;
 }
 
