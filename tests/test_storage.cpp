@@ -32,7 +32,10 @@ int main() {
     disk_manager.ReadPage(p1, read_buf);
     std::cout << "    Read back: \"" << read_buf << "\"\n";
     assert(std::strcmp(write_buf, read_buf) == 0);
-    std::cout << "    PASSED: data survived a write + read cycle.\n\n";
+
+    std::cout << "    Requesting an OS-level durable sync...\n";
+    disk_manager.Sync();
+    std::cout << "    PASSED: DiskManager::Sync completed.\n\n";
 
     std::cout << "[3] Freeing page " << p2 << " and re-allocating...\n";
     free_space_manager.DeallocatePage(p2);

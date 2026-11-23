@@ -16,6 +16,7 @@ const std::set<std::string>& Keywords() {
         "CREATE", "TABLE", "INDEX", "ON", "INSERT", "INTO", "VALUES",
         "SELECT", "FROM", "WHERE", "UPDATE", "SET", "DELETE",
         "SHOW", "TABLES", "DESC", "DROP",
+        "BEGIN", "TRANSACTION", "COMMIT", "ROLLBACK",
 
         // Data types and constraints
         "INT", "INTEGER", "TEXT", "PRIMARY", "KEY", "UNIQUE",

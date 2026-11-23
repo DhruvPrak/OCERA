@@ -32,6 +32,7 @@ public:
 
     void ReadPage(page_id_t page_id, char* page_data);
     void WritePage(page_id_t page_id, const char* page_data);
+    void Sync();
 
     page_id_t GetNumPages() const { return num_pages_; }
 

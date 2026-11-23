@@ -10,15 +10,25 @@ endif()
 
 find_package(Threads REQUIRED)
 
+# Write-ahead log foundation
+add_library(ocera_wal
+    src/wal/log_manager.cpp
+)
+target_include_directories(ocera_wal PUBLIC src)
+
+add_executable(test_log_manager tests/test_log_manager.cpp)
+target_link_libraries(test_log_manager PRIVATE ocera_wal)
+
 # Storage engine sources, shared by the main binary and by tests.
 add_library(ocera_storage
     src/storage/disk_manager.cpp
     src/storage/free_space_manager.cpp
     src/storage/database_header.cpp
     src/storage/buffer_pool_manager.cpp
+    src/storage/recovery_manager.cpp
 )
 target_include_directories(ocera_storage PUBLIC src)
-target_link_libraries(ocera_storage PUBLIC Threads::Threads)
+target_link_libraries(ocera_storage PUBLIC Threads::Threads ocera_wal)
 
 add_executable(ocera src/main.cpp)
 
@@ -55,7 +65,7 @@ add_library(ocera_txn
     src/txn/deadlock_detector.cpp
 )
 target_include_directories(ocera_txn PUBLIC src)
-target_link_libraries(ocera_txn PUBLIC Threads::Threads)
+target_link_libraries(ocera_txn PUBLIC Threads::Threads ocera_wal)
 
 add_executable(test_lock_manager tests/test_lock_manager.cpp)
 target_link_libraries(test_lock_manager PRIVATE ocera_txn)
@@ -134,6 +144,7 @@ target_link_libraries(ocera_table_heap
     PUBLIC
         ocera_record
         ocera_storage
+        ocera_txn
 )
 
 add_executable(test_table_heap
@@ -172,7 +183,11 @@ target_link_libraries(ocera_sql_executor
         ocera_catalog
         ocera_record_table
         ocera_index
+        ocera_txn
 )
+
+add_executable(test_database_bootstrap tests/test_database_bootstrap.cpp)
+target_link_libraries(test_database_bootstrap PRIVATE ocera_storage ocera_wal)
 
 # Database lifecycle foundation.
 add_library(ocera_database_instance
@@ -185,6 +200,8 @@ target_link_libraries(ocera_database_instance
     PUBLIC
         ocera_storage
         ocera_sql_executor
+        ocera_wal
+        ocera_txn
 )
 
 add_executable(test_database_instance
@@ -196,10 +213,23 @@ target_link_libraries(test_database_instance
         ocera_database_instance
 )
 
+# TableHeap's transaction-aware integration test uses the full database owner.
+target_link_libraries(test_table_heap PRIVATE ocera_database_instance)
+
+add_executable(test_wal_recovery tests/test_wal_recovery.cpp)
+target_link_libraries(test_wal_recovery PRIVATE ocera_database_instance)
+
+# Abrupt child-process termination tests for WAL redo/undo guarantees.
+add_executable(test_wal_crash tests/test_wal_crash.cpp)
+target_link_libraries(test_wal_crash PRIVATE ocera_database_instance)
+
 add_executable(test_sql_executor
     tests/test_sql_executor.cpp
 )
 target_link_libraries(test_sql_executor PRIVATE ocera_sql_executor)
+
+add_executable(test_sql_transactions tests/test_sql_transactions.cpp)
+target_link_libraries(test_sql_transactions PRIVATE ocera_database_instance)
 
 # Multiline SQL statement reader tests.
 add_executable(test_statement_reader

@@ -4,11 +4,15 @@
 #include "storage/free_space_manager.h"
 
 #include <cassert>
+#include <chrono>
+#include <future>
 #include <cstdio>
 #include <cstdint>
 #include <iostream>
 #include <string>
 #include <vector>
+
+#include "storage/database_instance.h"
 
 using namespace ocera;
 
@@ -148,7 +152,74 @@ int main() {
         bpm.FlushAllPages();
     }
 
+    const std::string transactional_db_file = "test_table_heap_txn.db";
+    std::remove(transactional_db_file.c_str());
+    std::remove((transactional_db_file + ".wal").c_str());
+
+    {
+        DatabaseInstance database(transactional_db_file, 3);
+        BufferPoolManager& transactional_bpm =
+            database.GetBufferPoolManager();
+        TransactionManager& transaction_manager =
+            database.GetTransactionManager();
+        LockManager& lock_manager = database.GetLockManager();
+
+        page_id_t transactional_first_page = INVALID_PAGE_ID;
+        assert(TableHeap::Create(transactional_bpm,
+                                 &transactional_first_page));
+        TableHeap transactional_heap(transactional_bpm,
+                                     transactional_first_page,
+                                     &transaction_manager);
+        RID transactional_rid;
+        const auto initial_record = MakeRecord(200, 0x11);
+        assert(transactional_heap.Insert(initial_record, &transactional_rid));
+
+        std::cout << "[8] Transaction-aware page locking...\n";
+        const txn_id_t reader = transaction_manager.Begin();
+        std::vector<std::uint8_t> read_record;
+        assert(transactional_heap.Get(transactional_rid, &read_record,
+                                      reader));
+        assert(read_record == initial_record);
+        assert(lock_manager.HoldsLock(reader, transactional_rid.page_id,
+                                      LockMode::Shared));
+
+        const txn_id_t writer = transaction_manager.Begin();
+        const auto transaction_update = MakeRecord(200, 0xCC);
+        auto update_result = std::async(std::launch::async, [&]() {
+            return transactional_heap.Update(transactional_rid,
+                                             transaction_update, writer);
+        });
+        assert(update_result.wait_for(std::chrono::milliseconds(50)) ==
+               std::future_status::timeout);
+        assert(transaction_manager.Commit(reader));
+        assert(update_result.wait_for(std::chrono::seconds(2)) ==
+               std::future_status::ready);
+        assert(update_result.get());
+        assert(lock_manager.HoldsLock(writer, transactional_rid.page_id,
+                                      LockMode::Exclusive));
+        assert(transaction_manager.Commit(writer));
+        assert(lock_manager.NumLocksHeld(reader) == 0);
+        assert(lock_manager.NumLocksHeld(writer) == 0);
+        CheckRecord(transactional_heap, transactional_rid,
+                    transaction_update);
+
+        const txn_id_t scanner = transaction_manager.Begin();
+        std::vector<std::pair<RID, std::vector<std::uint8_t>>> scanned;
+        assert(transactional_heap.Scan(&scanned, scanner));
+        assert(lock_manager.HoldsLock(scanner, transactional_first_page,
+                                      LockMode::Shared));
+        assert(transaction_manager.Commit(scanner));
+
+        // A transaction ID must refer to an active transaction when a
+        // TransactionManager is attached to the heap.
+        assert(!transactional_heap.Get(transactional_rid, &read_record,
+                                       999999));
+        database.Flush();
+    }
+
     std::remove(db_file.c_str());
+    std::remove(transactional_db_file.c_str());
+    std::remove((transactional_db_file + ".wal").c_str());
 
     std::cout << "\nAll TableHeap tests passed.\n";
 

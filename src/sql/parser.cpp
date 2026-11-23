@@ -90,7 +90,10 @@ private:
         if (IsKeyword(first, "SHOW")) return ParseShow();
         if (IsKeyword(first, "DESC")) return ParseDesc();
         if (IsKeyword(first, "DROP")) return ParseDrop();
-        Fail("expected CREATE, INSERT, SELECT, UPDATE or DELETE but found " +
+        if (IsKeyword(first, "BEGIN")) return ParseBeginTransaction();
+        if (IsKeyword(first, "COMMIT")) return ParseCommitTransaction();
+        if (IsKeyword(first, "ROLLBACK")) return ParseRollbackTransaction();
+        Fail("expected a supported SQL statement but found " +
              Describe(first), first.position);
     }
 
@@ -115,6 +118,24 @@ DropTableStatement ParseDrop() {
     s.table = ExpectIdentifier("table name").text;
     return s;
 }
+
+    Statement ParseBeginTransaction() {
+        Advance();
+        if (IsKeyword(Peek(), "TRANSACTION")) Advance();
+        return BeginTransactionStatement{};
+    }
+
+    Statement ParseCommitTransaction() {
+        Advance();
+        if (IsKeyword(Peek(), "TRANSACTION")) Advance();
+        return CommitTransactionStatement{};
+    }
+
+    Statement ParseRollbackTransaction() {
+        Advance();
+        if (IsKeyword(Peek(), "TRANSACTION")) Advance();
+        return RollbackTransactionStatement{};
+    }
 
     Statement ParseCreate() {
         Advance();

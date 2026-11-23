@@ -370,7 +370,7 @@ int main(int argc, char* argv[]) {
         std::cout << "====================================\n";
         std::cout << "Database: " << active_name << " (" << active_file << ")\n";
         std::cout << "Database commands: CREATE DATABASE, SHOW DATABASES, USE, DROP DATABASE\n";
-        std::cout << "Table commands: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, SHOW TABLES, DESC\n";
+        std::cout << "Table commands: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, SHOW TABLES, DESC, BEGIN, COMMIT, ROLLBACK\n";
         std::cout << "Type .exit to quit.\n\n";
 
         std::string line;

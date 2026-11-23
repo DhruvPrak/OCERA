@@ -1,109 +1,416 @@
 #include "database_header.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <random>
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#undef CREATE_NEW
+#undef OPEN_EXISTING
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace ocera {
-
 namespace {
+constexpr std::size_t kMagicOffset = 0;
+constexpr std::size_t kVersionOffset = 4;
+constexpr std::size_t kPageSizeOffset = 8;
+constexpr std::size_t kCatalogRootOffset = 12;
+constexpr std::size_t kDatabaseIdOffset = 16;
+constexpr std::size_t kHeaderCrcOffset = 32;
+constexpr std::uint32_t kLegacyVersion = 1;
+constexpr std::size_t kUpgradeFileSize = 8 + 4 + PAGE_SIZE + 4;
+constexpr char kUpgradeMagic[8] = {'O','C','E','R','A','U','P','G'};
 
-// Fixed byte offsets within page 1. Chosen so future fields (Month 2+) can
-// be appended after catalog_root without disturbing anything read here.
-constexpr std::size_t kMagicOffset = 0;         // 4 bytes
-constexpr std::size_t kVersionOffset = 4;       // 4 bytes (uint32, little-endian)
-constexpr std::size_t kPageSizeOffset = 8;      // 4 bytes (uint32, little-endian)
-constexpr std::size_t kCatalogRootOffset = 12;  // 4 bytes (int32,  little-endian)
-
-// Manual little-endian packing/unpacking, independent of host byte order or
-// struct padding -- part of keeping the file format itself portable.
 void WriteU32LE(char* buf, std::size_t offset, std::uint32_t value) {
-    buf[offset + 0] = static_cast<char>(value & 0xFFu);
-    buf[offset + 1] = static_cast<char>((value >> 8) & 0xFFu);
-    buf[offset + 2] = static_cast<char>((value >> 16) & 0xFFu);
-    buf[offset + 3] = static_cast<char>((value >> 24) & 0xFFu);
+    for (unsigned i = 0; i < 4; ++i)
+        buf[offset + i] = static_cast<char>((value >> (8U * i)) & 0xFFU);
 }
-
 std::uint32_t ReadU32LE(const char* buf, std::size_t offset) {
-    return (static_cast<std::uint32_t>(static_cast<std::uint8_t>(buf[offset + 0]))) |
-           (static_cast<std::uint32_t>(static_cast<std::uint8_t>(buf[offset + 1])) << 8) |
-           (static_cast<std::uint32_t>(static_cast<std::uint8_t>(buf[offset + 2])) << 16) |
-           (static_cast<std::uint32_t>(static_cast<std::uint8_t>(buf[offset + 3])) << 24);
+    std::uint32_t value = 0;
+    for (unsigned i = 0; i < 4; ++i)
+        value |= static_cast<std::uint32_t>(static_cast<std::uint8_t>(buf[offset + i])) << (8U * i);
+    return value;
+}
+std::uint32_t Crc32(const std::uint8_t* data, std::size_t size) {
+    std::uint32_t crc = 0xFFFFFFFFU;
+    for (std::size_t i = 0; i < size; ++i) {
+        crc ^= data[i];
+        for (unsigned bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1U) ^ (0xEDB88320U & (0U - (crc & 1U)));
+    }
+    return ~crc;
+}
+DatabaseId GenerateDatabaseId() {
+    std::random_device random;
+    DatabaseId id{};
+    for (auto& byte : id) byte = static_cast<std::uint8_t>(random());
+    id[6] = static_cast<std::uint8_t>((id[6] & 0x0FU) | 0x40U);
+    id[8] = static_cast<std::uint8_t>((id[8] & 0x3FU) | 0x80U);
+    return id;
+}
+void BuildV2Header(char* page, const DatabaseId& id, page_id_t root) {
+    std::memset(page, 0, PAGE_SIZE);
+    std::memcpy(page + kMagicOffset, DatabaseHeader::kMagic, sizeof(DatabaseHeader::kMagic));
+    WriteU32LE(page, kVersionOffset, DatabaseHeader::kCurrentVersion);
+    WriteU32LE(page, kPageSizeOffset, static_cast<std::uint32_t>(PAGE_SIZE));
+    WriteU32LE(page, kCatalogRootOffset, static_cast<std::uint32_t>(root));
+    std::memcpy(page + kDatabaseIdOffset, id.data(), id.size());
+    WriteU32LE(page, kHeaderCrcOffset,
+               Crc32(reinterpret_cast<const std::uint8_t*>(page), kHeaderCrcOffset));
+}
+void ValidateV2Header(const char* page) {
+    if (std::memcmp(page, DatabaseHeader::kMagic, sizeof(DatabaseHeader::kMagic)) != 0)
+        throw std::runtime_error("DatabaseHeader: database magic mismatch");
+    const auto version = ReadU32LE(page, kVersionOffset);
+    if (version != DatabaseHeader::kCurrentVersion)
+        throw std::runtime_error("DatabaseHeader: unsupported database format version " + std::to_string(version));
+    const auto page_size = ReadU32LE(page, kPageSizeOffset);
+    if (page_size != PAGE_SIZE)
+        throw std::runtime_error("DatabaseHeader: database page size mismatch");
+    if (ReadU32LE(page, kHeaderCrcOffset) !=
+        Crc32(reinterpret_cast<const std::uint8_t*>(page), kHeaderCrcOffset))
+        throw std::runtime_error("DatabaseHeader: header checksum mismatch");
+    bool all_zero = true;
+    for (std::size_t i = 0; i < 16; ++i) all_zero = all_zero && page[kDatabaseIdOffset + i] == 0;
+    if (all_zero) throw std::runtime_error("DatabaseHeader: database identity is invalid");
+}
+void SyncPath(const std::string& path) {
+#if defined(_WIN32)
+    const int fd = _open(path.c_str(), _O_RDWR | _O_BINARY);
+    if (fd < 0) throw std::runtime_error("DatabaseHeader: cannot open migration journal for sync");
+    const int result = _commit(fd);
+    const int close_result = _close(fd);
+#else
+    const int fd = ::open(path.c_str(), O_RDWR);
+    if (fd < 0) throw std::runtime_error("DatabaseHeader: cannot open migration journal for sync");
+    const int result = ::fsync(fd);
+    const int close_result = ::close(fd);
+#endif
+    if (result != 0 || close_result != 0)
+        throw std::runtime_error("DatabaseHeader: migration journal sync failed");
+}
+void SyncDirectory(const std::filesystem::path& path) {
+#if !defined(_WIN32)
+    const auto directory = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
+    const int fd = ::open(directory.c_str(), O_RDONLY);
+    if (fd < 0) throw std::runtime_error("DatabaseHeader: cannot open directory for sync");
+    const int result = ::fsync(fd);
+    const int close_result = ::close(fd);
+    if (result != 0 || close_result != 0)
+        throw std::runtime_error("DatabaseHeader: directory sync failed");
+#else
+    (void)path;
+    // The journal file itself is committed with _commit. Windows does not
+    // expose a portable directory-fsync equivalent through the CRT.
+#endif
+}
+std::string UpgradePath(const std::string& database_file) { return database_file + ".upgrade"; }
+std::vector<char> ReadUpgradePage(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("DatabaseHeader: cannot open migration journal");
+    std::vector<std::uint8_t> bytes(kUpgradeFileSize);
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (in.gcount() != static_cast<std::streamsize>(bytes.size()) || in.peek() != EOF)
+        throw std::runtime_error("DatabaseHeader: malformed migration journal length");
+    if (std::memcmp(bytes.data(), kUpgradeMagic, sizeof(kUpgradeMagic)) != 0 ||
+        ReadU32LE(reinterpret_cast<const char*>(bytes.data()), 8) != 1 ||
+        Crc32(bytes.data(), 8 + 4 + PAGE_SIZE) != ReadU32LE(reinterpret_cast<const char*>(bytes.data()), 8 + 4 + PAGE_SIZE))
+        throw std::runtime_error("DatabaseHeader: migration journal checksum or format is invalid");
+    std::vector<char> page(PAGE_SIZE);
+    std::memcpy(page.data(), bytes.data() + 12, PAGE_SIZE);
+    ValidateV2Header(page.data());
+    return page;
+}
+void WriteUpgradeJournal(const std::string& path, const char* target_page) {
+    std::vector<std::uint8_t> bytes;
+    bytes.insert(bytes.end(), kUpgradeMagic, kUpgradeMagic + sizeof(kUpgradeMagic));
+    bytes.push_back(1); bytes.push_back(0); bytes.push_back(0); bytes.push_back(0);
+    bytes.insert(bytes.end(), reinterpret_cast<const std::uint8_t*>(target_page),
+                 reinterpret_cast<const std::uint8_t*>(target_page) + PAGE_SIZE);
+    const auto crc = Crc32(bytes.data(), bytes.size());
+    for (unsigned i = 0; i < 4; ++i) bytes.push_back(static_cast<std::uint8_t>(crc >> (8U * i)));
+    const std::string temp = path + ".tmp";
+    {
+        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+        if (!out || !out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
+            throw std::runtime_error("DatabaseHeader: cannot write migration journal");
+        out.flush();
+        if (!out) throw std::runtime_error("DatabaseHeader: migration journal write failed");
+    }
+    SyncPath(temp);
+#if defined(_WIN32)
+    if (!MoveFileExA(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        throw std::runtime_error("DatabaseHeader: cannot durably publish migration journal");
+#else
+    std::error_code ec;
+    std::filesystem::rename(temp, path, ec);
+    if (ec) throw std::runtime_error("DatabaseHeader: cannot publish migration journal: " + ec.message());
+    SyncDirectory(std::filesystem::path(path));
+#endif
+}
+bool TryReadWalDatabaseId(const std::string& wal_file, DatabaseId* database_id) {
+    if (database_id == nullptr || !std::filesystem::exists(wal_file)) return false;
+    if (std::filesystem::file_size(wal_file) < 32) return false;
+
+    std::array<std::uint8_t, 32> header{};
+    std::ifstream in(wal_file, std::ios::binary);
+    in.read(reinterpret_cast<char*>(header.data()),
+            static_cast<std::streamsize>(header.size()));
+    const char magic[8] = {'O','C','E','R','A','W','A','L'};
+    if (!in || std::memcmp(header.data(), magic, sizeof(magic)) != 0 ||
+        ReadU32LE(reinterpret_cast<const char*>(header.data()), 8) != 2 ||
+        ReadU32LE(reinterpret_cast<const char*>(header.data()), 28) !=
+            Crc32(header.data(), 28)) {
+        return false;
+    }
+
+    std::copy(header.begin() + 12, header.begin() + 28, database_id->begin());
+    bool all_zero = true;
+    for (std::uint8_t byte : *database_id) all_zero = all_zero && byte == 0;
+    return !all_zero;
 }
 
+void CheckLegacyWal(const std::string& wal_file) {
+    if (!std::filesystem::exists(wal_file)) return;
+    const auto size = std::filesystem::file_size(wal_file);
+    if (size == 0) return;
+    if (size < 16)
+        throw std::runtime_error("DatabaseHeader: existing WAL has a truncated header");
+    std::array<std::uint8_t, 16> header{};
+    std::ifstream in(wal_file, std::ios::binary);
+    in.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+    const char magic[8] = {'O','C','E','R','A','W','A','L'};
+    if (!in || std::memcmp(header.data(), magic, 8) != 0 ||
+        ReadU32LE(reinterpret_cast<const char*>(header.data()), 12) != Crc32(header.data(), 12))
+        throw std::runtime_error("DatabaseHeader: existing WAL header is invalid; refusing database migration");
+    const auto version = ReadU32LE(reinterpret_cast<const char*>(header.data()), 8);
+    if (version != 1)
+        throw std::runtime_error("DatabaseHeader: existing WAL is not a legacy v1 log and cannot be associated with a v1 database");
+    if (size != 16)
+        throw std::runtime_error("DatabaseHeader: legacy WAL contains transaction records but has no database identity; preserve it and resolve it before migration");
+}
 }  // namespace
 
-DatabaseHeader::DatabaseHeader(DiskManager& disk_manager)
-    : disk_manager_(disk_manager), version_(0), page_size_(0), catalog_root_page_id_(INVALID_PAGE_ID) {
-    // Page 1 is logically reserved by FreeSpaceManager as soon as the file
-    // is created, but that alone doesn't mean it has been *physically*
-    // written yet. GetNumPages() reflects real on-disk content, so "page 1
-    // has never been written" -- not "the file is empty" -- is the correct
-    // fresh-vs-existing check here.
-    if (disk_manager_.GetNumPages() <= HEADER_PAGE_ID) {
-        WriteDefaults();
-    } else {
-        Load();
+DatabaseHeader::DatabaseHeader(DiskManager& disk_manager, LogManager* log_manager)
+    : disk_manager_(disk_manager), log_manager_(log_manager) {
+    if (disk_manager_.GetNumPages() <= HEADER_PAGE_ID) WriteDefaults();
+    else Load();
+}
+
+DatabaseHeader::BootstrapResult DatabaseHeader::Bootstrap(
+    DiskManager& disk_manager, const std::string& database_file, const std::string& wal_file) {
+    BootstrapResult result;
+    const auto marker = UpgradePath(database_file);
+#if defined(_WIN32)
+    const std::string completed_marker = marker + ".done";
+    if (std::filesystem::exists(completed_marker)) DeleteFileA(completed_marker.c_str());
+#endif
+    const bool marker_exists = std::filesystem::exists(marker);
+
+    // A published journal is the only authorization to create or repair a WAL
+    // for a database whose initialization/migration has not yet completed.
+    // Replay it before inspecting database pages: a crash may have happened
+    // after publishing the journal but before writing either reserved page.
+    if (marker_exists) {
+        const auto target = ReadUpgradePage(marker);
+        std::memcpy(result.database_id.data(), target.data() + kDatabaseIdOffset,
+                    result.database_id.size());
+
+        if (disk_manager.GetNumPages() <= 1) {
+            // The journal proves this is an interrupted bootstrap. Rebuild the
+            // reserved bitmap before replaying the durable target header.
+            std::array<char, PAGE_SIZE> bitmap{};
+            bitmap[BITMAP_PAGE_ID / 8] |= static_cast<char>(1U << (BITMAP_PAGE_ID % 8));
+            bitmap[HEADER_PAGE_ID / 8] |= static_cast<char>(1U << (HEADER_PAGE_ID % 8));
+            disk_manager.WritePage(BITMAP_PAGE_ID, bitmap.data());
+        }
+
+        disk_manager.WritePage(HEADER_PAGE_ID, target.data());
+        disk_manager.Sync();
+        result.allow_wal_creation = true;
+        result.allow_wal_repair = true;
+        result.migration_pending = true;
+        return result;
     }
+
+    if (disk_manager.GetNumPages() == 0) {
+        if (std::filesystem::exists(wal_file))
+            throw std::runtime_error("DatabaseHeader: an orphan WAL already exists for a new database path; preserve or rename it before creating this database");
+
+        // Publish durable intent before touching the database file. If startup
+        // stops below, the next open resumes with this same database identity.
+        result.database_id = GenerateDatabaseId();
+        std::array<char, PAGE_SIZE> header{};
+        BuildV2Header(header.data(), result.database_id, INVALID_PAGE_ID);
+        WriteUpgradeJournal(marker, header.data());
+
+        std::array<char, PAGE_SIZE> bitmap{};
+        bitmap[BITMAP_PAGE_ID / 8] |= static_cast<char>(1U << (BITMAP_PAGE_ID % 8));
+        bitmap[HEADER_PAGE_ID / 8] |= static_cast<char>(1U << (HEADER_PAGE_ID % 8));
+        disk_manager.WritePage(BITMAP_PAGE_ID, bitmap.data());
+        disk_manager.WritePage(HEADER_PAGE_ID, header.data());
+        disk_manager.Sync();
+
+        result.allow_wal_creation = true;
+        result.allow_wal_repair = true;
+        result.migration_pending = true;
+        return result;
+    }
+
+    // A one-page file without a valid bootstrap journal is ambiguous. Never
+    // infer that it is new or silently assign it a replacement database ID.
+    if (disk_manager.GetNumPages() <= HEADER_PAGE_ID)
+        throw std::runtime_error("DatabaseHeader: database file is incomplete and has no bootstrap journal");
+
+    std::array<char, PAGE_SIZE> current{};
+    disk_manager.ReadPage(HEADER_PAGE_ID, current.data());
+    auto recover_identity_from_wal = [&]() {
+        if (!TryReadWalDatabaseId(wal_file, &result.database_id)) return false;
+        // The WAL header supplies the identity needed to open the log. The
+        // RecoveryManager must restore a valid page-1 image before the normal
+        // DatabaseHeader constructor validates it.
+        result.allow_wal_creation = false;
+        result.allow_wal_repair = false;
+        return true;
+    };
+
+    if (std::memcmp(current.data(), kMagic, sizeof(kMagic)) != 0) {
+        if (recover_identity_from_wal()) return result;
+        throw std::runtime_error("DatabaseHeader: not a valid OCERA database (magic mismatch)");
+    }
+    const auto version = ReadU32LE(current.data(), kVersionOffset);
+    if (version == kCurrentVersion) {
+        try {
+            ValidateV2Header(current.data());
+        } catch (const std::exception&) {
+            if (recover_identity_from_wal()) return result;
+            throw;
+        }
+        std::memcpy(result.database_id.data(), current.data() + kDatabaseIdOffset,
+                    result.database_id.size());
+
+        // An established v2 database never gets a replacement WAL merely
+        // because it happens to contain only its two reserved pages.
+        result.allow_wal_creation = false;
+        result.allow_wal_repair = false;
+        return result;
+    }
+    if (version == kLegacyVersion) {
+        // A v2 WAL proves that a v2 header write may have been torn after its
+        // WAL record became durable. A genuine v1 database follows migration.
+        if (recover_identity_from_wal()) return result;
+        if (ReadU32LE(current.data(), kPageSizeOffset) != PAGE_SIZE)
+            throw std::runtime_error("DatabaseHeader: legacy database page size mismatch");
+    } else {
+        if (recover_identity_from_wal()) return result;
+        throw std::runtime_error("DatabaseHeader: unsupported database format version " + std::to_string(version));
+    }
+
+    CheckLegacyWal(wal_file);
+    result.database_id = GenerateDatabaseId();
+    const auto root = static_cast<page_id_t>(ReadU32LE(current.data(), kCatalogRootOffset));
+    std::array<char, PAGE_SIZE> target{};
+    BuildV2Header(target.data(), result.database_id, root);
+
+    // The migration intent is durable before the in-place header update.
+    // WAL creation/repair stays authorized until the matching WAL opens and
+    // DatabaseInstance retires this journal.
+    WriteUpgradeJournal(marker, target.data());
+    disk_manager.WritePage(HEADER_PAGE_ID, target.data());
+    disk_manager.Sync();
+    result.allow_wal_creation = true;
+    result.allow_wal_repair = true;
+    result.migration_pending = true;
+    return result;
+}
+void DatabaseHeader::CompleteBootstrap(const std::string& database_file) {
+    // Retire the bootstrap/migration intent only after the matching WAL has
+    // opened and validated successfully.
+    const auto marker = UpgradePath(database_file);
+    if (!std::filesystem::exists(marker)) return;
+#if defined(_WIN32)
+    const std::string completed_marker = marker + ".done";
+    if (!MoveFileExA(marker.c_str(), completed_marker.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        throw std::runtime_error("DatabaseHeader: cannot durably retire migration journal");
+    // A leftover .done file is harmless: the database header and WAL are
+    // already durable, and the canonical .upgrade marker has been retired.
+    DeleteFileA(completed_marker.c_str());
+#else
+    std::error_code ec;
+    std::filesystem::remove(marker, ec);
+    if (ec) throw std::runtime_error("DatabaseHeader: cannot remove completed migration journal: " + ec.message());
+    SyncDirectory(std::filesystem::path(marker));
+#endif
 }
 
 void DatabaseHeader::WriteDefaults() {
     version_ = kCurrentVersion;
     page_size_ = static_cast<std::uint32_t>(PAGE_SIZE);
     catalog_root_page_id_ = INVALID_PAGE_ID;
+    database_id_ = GenerateDatabaseId();
     Flush();
 }
 
 void DatabaseHeader::Flush() const {
-    char buf[PAGE_SIZE];
-    std::memset(buf, 0, PAGE_SIZE);
-    std::memcpy(buf + kMagicOffset, kMagic, sizeof(kMagic));
-    WriteU32LE(buf, kVersionOffset, version_);
-    WriteU32LE(buf, kPageSizeOffset, page_size_);
-    WriteU32LE(buf, kCatalogRootOffset, static_cast<std::uint32_t>(catalog_root_page_id_));
-    disk_manager_.WritePage(HEADER_PAGE_ID, buf);
-}
-
-void DatabaseHeader::SetCatalogRootPageId(page_id_t page_id) {
-    if (page_id != INVALID_PAGE_ID && page_id < 2) {
-        throw std::invalid_argument("catalog root page ID is invalid");
+    if (!healthy_) {
+        throw std::runtime_error("DatabaseHeader: header manager is in a failed state");
     }
-
-    const page_id_t previous_page_id = catalog_root_page_id_;
-    catalog_root_page_id_ = page_id;
-
     try {
-        Flush();
+        std::array<char, PAGE_SIZE> page{};
+        BuildV2Header(page.data(), database_id_, catalog_root_page_id_);
+        if (log_manager_) {
+            std::array<char, PAGE_SIZE> before{};
+            disk_manager_.ReadPage(HEADER_PAGE_ID, before.data());
+            std::uint64_t lsn = 0;
+            if (!log_manager_->AppendPageUpdate(0, HEADER_PAGE_ID, before.data(),
+                                                page.data(), &lsn) ||
+                !log_manager_->FlushUpTo(lsn)) {
+                throw std::runtime_error("DatabaseHeader: WAL write failed: " +
+                                         log_manager_->GetLastError());
+            }
+        }
+        disk_manager_.WritePage(HEADER_PAGE_ID, page.data());
     } catch (...) {
-        catalog_root_page_id_ = previous_page_id;
+        healthy_ = false;
         throw;
     }
 }
 
+void DatabaseHeader::SetCatalogRootPageId(page_id_t page_id) {
+    if (!healthy_) throw std::runtime_error("DatabaseHeader: header manager is in a failed state");
+    if (page_id != INVALID_PAGE_ID && page_id < 2)
+        throw std::invalid_argument("catalog root page ID is invalid");
+    const page_id_t previous = catalog_root_page_id_;
+    catalog_root_page_id_ = page_id;
+    try { Flush(); } catch (...) { catalog_root_page_id_ = previous; throw; }
+}
+
 void DatabaseHeader::Load() {
-    char buf[PAGE_SIZE];
-    disk_manager_.ReadPage(HEADER_PAGE_ID, buf);
-
-    if (std::memcmp(buf + kMagicOffset, kMagic, sizeof(kMagic)) != 0) {
-        throw std::runtime_error(
-            "DatabaseHeader: not a valid OCERA file (magic number mismatch)");
-    }
-
-    version_ = ReadU32LE(buf, kVersionOffset);
-    if (version_ != kCurrentVersion) {
-        throw std::runtime_error(
-            "DatabaseHeader: unsupported format version " + std::to_string(version_) +
-            " (this build supports version " + std::to_string(kCurrentVersion) + ")");
-    }
-
-    page_size_ = ReadU32LE(buf, kPageSizeOffset);
-    if (page_size_ != static_cast<std::uint32_t>(PAGE_SIZE)) {
-        throw std::runtime_error(
-            "DatabaseHeader: page size mismatch (file was created with " +
-            std::to_string(page_size_) + "-byte pages, this build uses " +
-            std::to_string(PAGE_SIZE) + "-byte pages)");
-    }
-
-    catalog_root_page_id_ = static_cast<page_id_t>(ReadU32LE(buf, kCatalogRootOffset));
+    std::array<char, PAGE_SIZE> page{};
+    disk_manager_.ReadPage(HEADER_PAGE_ID, page.data());
+    ValidateV2Header(page.data());
+    version_ = ReadU32LE(page.data(), kVersionOffset);
+    page_size_ = ReadU32LE(page.data(), kPageSizeOffset);
+    catalog_root_page_id_ = static_cast<page_id_t>(ReadU32LE(page.data(), kCatalogRootOffset));
+    std::memcpy(database_id_.data(), page.data() + kDatabaseIdOffset, database_id_.size());
 }
 
 }  // namespace ocera

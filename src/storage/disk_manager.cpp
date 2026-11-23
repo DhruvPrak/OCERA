@@ -5,6 +5,14 @@
 #include <filesystem>
 #include <stdexcept>
 
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 namespace ocera {
 
 DiskManager::DiskManager(
@@ -76,18 +84,18 @@ DiskManager::DiskManager(
     const auto size = static_cast<std::streamoff>(file_size);
 
     if (mode == DatabaseOpenMode::OPEN_EXISTING) {
-        if (size == 0) {
-            throw std::runtime_error(
-                "DiskManager: existing database file is empty"
-            );
-        }
-
-        if (size % static_cast<std::streamoff>(PAGE_SIZE) != 0) {
-            throw std::runtime_error(
-                "DiskManager: database file size is not page-aligned"
-            );
-        }
+    if (size == 0 && !fs::exists(file_name_ + ".upgrade")) {
+        throw std::runtime_error(
+            "DiskManager: existing database file is empty"
+        );
     }
+
+    if (size % static_cast<std::streamoff>(PAGE_SIZE) != 0) {
+        throw std::runtime_error(
+            "DiskManager: database file size is not page-aligned"
+        );
+    }
+}
 
     num_pages_ = static_cast<page_id_t>(
         size / static_cast<std::streamoff>(PAGE_SIZE)
@@ -182,6 +190,64 @@ void DiskManager::WritePage(page_id_t page_id, const char* page_data) {
 
     if (page_id >= num_pages_) {
         num_pages_ = page_id + 1;
+    }
+}
+
+void DiskManager::Sync() {
+    std::lock_guard<std::mutex> lock(db_io_mutex_);
+
+    if (!db_io_.is_open()) {
+        throw std::runtime_error(
+            "DiskManager::Sync: database file is not open"
+        );
+    }
+
+    // First flush the C++ stream buffer.
+    db_io_.flush();
+
+    if (!db_io_) {
+        throw std::runtime_error(
+            "DiskManager::Sync: stream flush failed"
+        );
+    }
+
+#if defined(_WIN32)
+    const int fd = _open(
+        file_name_.c_str(),
+        _O_RDWR | _O_BINARY
+    );
+
+    if (fd == -1) {
+        throw std::runtime_error(
+            "DiskManager::Sync: could not open file for synchronization"
+        );
+    }
+
+    const int sync_result = _commit(fd);
+    const int close_result = _close(fd);
+#else
+    const int fd = ::open(file_name_.c_str(), O_RDWR);
+
+    if (fd == -1) {
+        throw std::runtime_error(
+            "DiskManager::Sync: could not open file for synchronization"
+        );
+    }
+
+    const int sync_result = ::fsync(fd);
+    const int close_result = ::close(fd);
+#endif
+
+    if (sync_result != 0) {
+        throw std::runtime_error(
+            "DiskManager::Sync: operating system synchronization failed"
+        );
+    }
+
+    if (close_result != 0) {
+        throw std::runtime_error(
+            "DiskManager::Sync: failed to close synchronization handle"
+        );
     }
 }
 

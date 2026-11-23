@@ -3,6 +3,7 @@
 #include <mutex>
 #include <vector>
 #include "disk_manager.h"
+#include "../wal/log_manager.h"
 
 namespace ocera {
 
@@ -22,7 +23,7 @@ namespace ocera {
 // chaining multiple bitmap pages together for a larger database.
 class FreeSpaceManager {
 public:
-    explicit FreeSpaceManager(DiskManager& disk_manager);
+    explicit FreeSpaceManager(DiskManager& disk_manager, LogManager* log_manager = nullptr);
 
     // Finds a free page, marks it used, and returns its id.
     // Throws std::runtime_error if the bitmap is full.
@@ -36,7 +37,10 @@ public:
 
 private:
     DiskManager& disk_manager_;
-    std::vector<std::uint8_t> bitmap_;  // packed bits, one PAGE_SIZE-byte page's worth
+    std::vector<std::uint8_t> bitmap_;
+    std::vector<std::uint8_t> persisted_bitmap_;
+    LogManager* log_manager_;
+    mutable bool healthy_ = true;  // packed bits, one PAGE_SIZE-byte page's worth
     mutable std::mutex mutex_;
 
     void LoadBitmap();

@@ -9,6 +9,7 @@
 #include "../common/page.h"
 #include "disk_manager.h"
 #include "free_space_manager.h"
+#include "../wal/log_manager.h"
 
 namespace ocera {
 
@@ -17,12 +18,15 @@ public:
     BufferPoolManager(
         std::size_t pool_size,
         DiskManager& disk_manager,
-        FreeSpaceManager& free_space_manager
+        FreeSpaceManager& free_space_manager,
+        LogManager* log_manager = nullptr
     );
 
     Page* FetchPage(page_id_t page_id);
 
-    bool UnpinPage(page_id_t page_id, bool is_dirty);
+    // If bytes changed, append a full before/after WAL record before releasing
+    // the pin. txn_id == 0 denotes a redo-only system update.
+    bool UnpinPage(page_id_t page_id, bool is_dirty, std::uint64_t txn_id = 0);
 
     bool FlushPage(page_id_t page_id);
 
@@ -32,6 +36,10 @@ public:
 
     bool DeletePage(page_id_t page_id);
 
+    // Restore the before-images of all updates belonging to txn_id. The
+    // caller must retain the transaction's locks until this returns.
+    bool UndoTransaction(std::uint64_t txn_id);
+
 private:
     // One memory slot that can hold one database page.
     struct Frame {
@@ -39,12 +47,15 @@ private:
         page_id_t page_id = INVALID_PAGE_ID;
         std::size_t pin_count = 0;
         bool is_dirty = false;
+        Page logged_image;
+        std::uint64_t page_lsn = 0;
     };
 
     std::size_t pool_size_;
 
     DiskManager& disk_manager_;
     FreeSpaceManager& free_space_manager_;
+    LogManager* log_manager_;
 
     // All frames currently available in the buffer pool.
     std::vector<Frame> frames_;
@@ -75,6 +86,8 @@ private:
     void UpdateLRU(std::size_t frame_id);
 
     bool GetAvailableFrame(std::size_t* frame_id);
+    void FlushFrame(Frame& frame);
+    bool RestorePage(page_id_t page_id, const char* image, std::uint64_t lsn);
 };
 
 }  // namespace ocera

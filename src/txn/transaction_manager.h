@@ -1,6 +1,8 @@
 #pragma once
 #include <mutex>
 #include <unordered_map>
+#include <functional>
+#include "../wal/log_manager.h"
 
 #include "txn/lock_manager.h"
 #include "txn/txn_types.h"
@@ -15,17 +17,20 @@ enum class TransactionState { Active, Committed, Aborted };
 //   * shrinking      = Commit()/Abort() release ALL locks at once; after
 //                      that the transaction can never acquire a lock again.
 //
-// NOTE (decision 6): Abort() currently only releases locks and records the
-// state. Undoing data changes needs the WAL/undo design (Ishika, Month 4).
-//
+// When configured with a LogManager and undo callback, transaction lifecycle
+// records are durable: COMMIT is synchronized before lock release, and ABORT
+// restores before-images and synchronizes its record before lock release.
 // Threading rule: Commit()/Abort() for a transaction must be called by the
 // thread that runs it (not from the deadlock detector). The detector only
 // *marks* a victim through LockManager::AbortTransaction; the victim's own
 // thread sees its Lock() fail and then calls Abort().
 class TransactionManager {
 public:
-    explicit TransactionManager(LockManager& lock_manager)
-        : lock_manager_(lock_manager) {}
+    using UndoCallback = std::function<bool(txn_id_t)>;
+
+    explicit TransactionManager(LockManager& lock_manager,
+                                LogManager* log_manager = nullptr,
+                                UndoCallback undo_callback = {});
     TransactionManager(const TransactionManager&) = delete;
     TransactionManager& operator=(const TransactionManager&) = delete;
 
@@ -46,11 +51,15 @@ public:
 
     // Returns false if the id is unknown.
     bool GetState(txn_id_t txn_id, TransactionState* state) const;
+    bool HasActiveTransactions() const;
+    bool RunWhenIdle(const std::function<void()>& action);
 
 private:
     bool Finish(txn_id_t txn_id, TransactionState final_state);
 
     LockManager& lock_manager_;
+    LogManager* log_manager_;
+    UndoCallback undo_callback_;
     mutable std::mutex mutex_;
     txn_id_t next_id_ = 1;
     std::unordered_map<txn_id_t, TransactionState> states_;
