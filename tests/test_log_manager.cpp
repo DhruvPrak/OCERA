@@ -1,14 +1,132 @@
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <iostream>
+#include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <iterator>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "../src/wal/log_manager.h"
 
 using namespace ocera;
 #define CHECK(x) do { if (!(x)) { std::cerr << "CHECK failed line " << __LINE__ << ": " #x << '\n'; return 1; } } while (false)
+
+namespace {
+std::vector<char> ReadFile(const std::string& file) {
+    std::ifstream in(file, std::ios::binary);
+    return std::vector<char>(std::istreambuf_iterator<char>(in),
+                             std::istreambuf_iterator<char>());
+}
+
+void WriteFile(const std::string& file, const std::vector<char>& bytes) {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!out) throw std::runtime_error("could not write WAL corruption fixture");
+}
+
+void PutU64LE(std::vector<char>& bytes, std::size_t offset, std::uint64_t value) {
+    for (unsigned i = 0; i < 8; ++i)
+        bytes.at(offset + i) = static_cast<char>(value >> (8U * i));
+}
+
+bool RejectsWal(const std::string& file, const DatabaseId& id) {
+    try {
+        LogManager invalid(file, id);
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+
+int TestWalCorruptionMatrix(const DatabaseId& id) {
+    const std::string fixture = "test_log_manager_matrix.wal";
+    std::remove(fixture.c_str());
+    {
+        LogManager log(fixture, id, true);
+        char before[PAGE_SIZE]{};
+        char after[PAGE_SIZE]{};
+        std::memcpy(before, "before", 7);
+        std::memcpy(after, "after", 6);
+        if (!log.AppendBegin(101) ||
+            !log.AppendPageUpdate(101, 2, before, after) ||
+            !log.AppendCommit(101) ||
+            !log.FlushUpTo(log.GetLastLSN())) return 1;
+    }
+    const std::vector<char> valid = ReadFile(fixture);
+    constexpr std::size_t file_header = 32;
+    constexpr std::size_t record_header = 36;
+    const std::size_t update_offset = file_header + record_header;
+
+    // An incomplete final record header is safely discarded, preserving BEGIN.
+    auto truncated_header = valid;
+    truncated_header.resize(update_offset + 12);
+    WriteFile(fixture, truncated_header);
+    {
+        LogManager repaired(fixture, id);
+        if (repaired.GetLastLSN() != 1) return 2;
+    }
+    if (std::filesystem::file_size(fixture) != update_offset) return 3;
+
+    // A complete header with an incomplete final payload is also a repairable tail.
+    auto truncated_payload = valid;
+    truncated_payload.resize(update_offset + record_header + 128);
+    WriteFile(fixture, truncated_payload);
+    {
+        LogManager repaired(fixture, id);
+        if (repaired.GetLastLSN() != 1) return 4;
+    }
+    if (std::filesystem::file_size(fixture) != update_offset) return 5;
+
+    // Complete-record corruption must fail closed, including corruption in a
+    // middle record rather than only at end-of-file.
+    auto invalid_type = valid;
+    invalid_type[update_offset] = static_cast<char>(0x7f);
+    WriteFile(fixture, invalid_type);
+    if (!RejectsWal(fixture, id)) return 6;
+
+    auto invalid_length = valid;
+    invalid_length[update_offset + 4] = 0;
+    invalid_length[update_offset + 5] = 0;
+    invalid_length[update_offset + 6] = 0;
+    invalid_length[update_offset + 7] = 0;
+    WriteFile(fixture, invalid_length);
+    if (!RejectsWal(fixture, id)) return 7;
+
+    auto invalid_lsn = valid;
+    PutU64LE(invalid_lsn, update_offset + 8, 99);
+    WriteFile(fixture, invalid_lsn);
+    if (!RejectsWal(fixture, id)) return 8;
+
+    auto invalid_checksum = valid;
+    invalid_checksum[update_offset + record_header + 17] ^= 0x40;
+    WriteFile(fixture, invalid_checksum);
+    if (!RejectsWal(fixture, id)) return 9;
+
+    // Existing databases must not silently initialize empty or truncated headers.
+    WriteFile(fixture, {});
+    if (!RejectsWal(fixture, id)) return 10;
+    auto truncated_file_header = valid;
+    truncated_file_header.resize(11);
+    WriteFile(fixture, truncated_file_header);
+    if (!RejectsWal(fixture, id)) return 11;
+
+    auto invalid_file_header_crc = valid;
+    invalid_file_header_crc[28] ^= 0x01;
+    WriteFile(fixture, invalid_file_header_crc);
+    if (!RejectsWal(fixture, id)) return 12;
+
+    auto unsupported_file_version = valid;
+    unsupported_file_version[8] = 0x7f;
+    WriteFile(fixture, unsupported_file_version);
+    if (!RejectsWal(fixture, id)) return 13;
+
+    std::remove(fixture.c_str());
+    return 0;
+}
+}  // namespace
 
 int main() {
     const std::string path = "test_log_manager.wal";
@@ -95,6 +213,9 @@ int main() {
     std::remove(path.c_str());
     std::remove(corrupt_path.c_str());
 
-    std::cout << "LogManager tests passed.\n";
+    const int corruption_result = TestWalCorruptionMatrix(database_id);
+    CHECK(corruption_result == 0);
+
+    std::cout << "LogManager tests passed (including WAL corruption matrix).\n";
     return 0;
 }

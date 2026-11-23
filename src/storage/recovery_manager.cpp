@@ -5,12 +5,15 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <utility>
 
 namespace ocera {
 
 RecoveryManager::RecoveryManager(DiskManager& disk_manager,
-                                 LogManager& log_manager)
-    : disk_manager_(disk_manager), log_manager_(log_manager) {
+                                 LogManager& log_manager,
+                                 Observer observer)
+    : disk_manager_(disk_manager), log_manager_(log_manager),
+      observer_(std::move(observer)) {
     Recover();
 }
 
@@ -47,6 +50,7 @@ void RecoveryManager::Recover() {
             disk_manager_.WritePage(
                 record.page_id,
                 reinterpret_cast<const char*>(record.payload.data()));
+            if (observer_) observer_(Action::UNDO, record);
         }
     };
 
@@ -82,6 +86,7 @@ void RecoveryManager::Recover() {
             disk_manager_.WritePage(
                 record.page_id,
                 reinterpret_cast<const char*>(record.payload.data() + PAGE_SIZE));
+            if (observer_) observer_(Action::REDO, record);
             continue;
         }
 

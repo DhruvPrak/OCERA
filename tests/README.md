@@ -12,9 +12,23 @@ cmake --build build --target test_wal_recovery
 ./build/test_wal_recovery
 ```
 
-The test covers durable commit redo, WAL-before-data flushing, loser undo,
-transactional TableHeap updates, runtime abort ordering, repeated recovery,
-checkpoint markers, and restoration of a damaged database header from WAL.
+The test covers durable commit redo, WAL-before-data flushing, repair of a
+corrupted committed data page, loser undo, transactional TableHeap updates,
+runtime abort ordering, repeated recovery, checkpoint markers, and restoration
+of a damaged database header from WAL. It also launches child processes that
+terminate immediately after a selected redo or undo write, plus after runtime
+undo has restored multiple updates to one page but before ABORT is logged. It
+then verifies that reopening (twice) completes recovery correctly.
+
+The WAL parser/corruption matrix is covered by `test_log_manager`, including
+repair of incomplete final record headers/payloads and rejection of malformed
+or checksum-invalid complete records, invalid WAL headers, and mismatched
+DatabaseIds. Bootstrap and migration failure cases are covered by
+`test_database_bootstrap`.
+
+`test_wal_crash` separately exercises process termination after WAL append but
+before WAL sync, after WAL sync but before page flush, after a loser page flush,
+and after a durable commit before page flush.
 
 ## SQL transactions
 

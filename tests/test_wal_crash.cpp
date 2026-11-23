@@ -70,6 +70,10 @@ int RunCrashChild(const std::string& scenario, const std::string& db_file) {
     if (scenario == "commit-before-page-flush") {
         WriteValue(db.GetBufferPoolManager(), page_id, "committed", txn);
         Require(tm.Commit(txn), "could not durably commit child transaction");
+    } else if (scenario == "loser-unforced-wal") {
+        // Append BEGIN/PAGE_UPDATE but deliberately do not force the WAL.
+        // The data page is not flushed, so losing this log tail is safe.
+        WriteValue(db.GetBufferPoolManager(), page_id, "uncommitted", txn);
     } else if (scenario == "loser-wal-only") {
         WriteValue(db.GetBufferPoolManager(), page_id, "uncommitted", txn);
         Require(db.GetLogManager().FlushUpTo(db.GetLogManager().GetLastLSN()),
@@ -190,6 +194,10 @@ int main(int argc, char** argv) {
         // A durable COMMIT must be redone even though the dirty data page was
         // never flushed before the child process terminated.
         RunScenario(executable, "commit-before-page-flush", "committed");
+
+        // A crash after append but before WAL sync is safe because the dirty
+        // data page has not been written to the database file.
+        RunScenario(executable, "loser-unforced-wal", "baseline");
 
         // A durable loser WAL record must be undone even when its data page
         // never reached the database file.

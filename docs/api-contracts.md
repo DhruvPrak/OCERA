@@ -438,13 +438,16 @@ Files:
 - `DatabaseInstance::Checkpoint()` requires no active transactions, flushes dirty pages, synchronizes the database file, then appends and synchronizes a CHECKPOINT marker.
 - **The current checkpoint does not truncate or recycle the WAL.** Recovery deliberately replays the complete log; this avoids requiring persisted page LSNs or a more advanced checkpoint protocol.
 - Page LSNs are held only in buffer-pool frame metadata. They are not persisted in the on-disk page format.
-- `TableHeap` and `RecordTable` mutations can be associated with a transaction by passing its ID. Existing SQL executor operations currently use transaction ID 0 and are WAL-protected redo-only system operations; SQL statement execution is not yet automatically wrapped in user transactions.
+- `TableHeap` and `RecordTable` mutations accept a transaction ID. Inside explicit SQL `BEGIN` / `COMMIT` / `ROLLBACK`, `SqlExecutor` propagates its active transaction ID through the record-table and table-heap paths, so row-page updates participate in WAL undo and strict-2PL locking. Standalone SQL statements outside an explicit transaction use transaction ID 0 (redo-only system updates); automatic one-statement transactions are not implemented.
 - Page allocation/deallocation metadata is logged as system updates. Transactional rollback of page allocation/deallocation itself is not implemented; an aborted operation that allocated a page may leave an unreachable allocated page.
 - This is a single-process educational recovery implementation, not ARIES and not a production crash-consistency claim. Full-log replay cost grows with WAL size.
 
 ### Recovery tests
 
-`test_wal_recovery` covers committed update redo without a data-page flush, WAL-before-data flushing, loser transaction undo after restart, transactional `TableHeap` insert undo, runtime abort followed by a later committed writer to the same page, repeated recovery, and checkpoint behavior.
+`test_wal_recovery` covers committed update redo without a data-page flush, WAL-before-data flushing, redo repair of a corrupted committed data page, loser transaction undo after restart, transactional `TableHeap` insert undo, runtime abort followed by a later committed writer to the same page, repeated recovery, checkpoint behavior, and deterministic child-process interruption after a selected redo or undo write, plus a crash after runtime before-image restoration but before ABORT is logged. The runtime-abort case checks reverse-order restoration of multiple updates to one page. Each interrupted-recovery scenario reopens the database twice and verifies the committed state both times. The optional `RecoveryManager` observer runs after a page image is written and supports these deterministic fault-injection tests.
+
+`test_log_manager` covers incomplete final record-header and payload repair, fail-closed handling of malformed record types/lengths/LSNs and complete-record checksum corruption, WAL-header corruption/version rejection, empty/truncated existing WAL rejection, and database-identity mismatch. `test_database_bootstrap` covers interrupted bootstrap/migration and refuses to recreate or repair a missing/truncated WAL for an established database.
+`test_wal_crash` also covers process termination after WAL append but before explicit WAL synchronization, after WAL synchronization but before a data-page flush, after a loser page has been flushed, and after durable COMMIT before a data-page flush. The corrupted-page test simulates a torn/corrupt page image; it does not kill the process in the middle of the operating-system write call.
 
 ### DatabaseInstance integration
 
