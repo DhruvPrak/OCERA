@@ -246,13 +246,21 @@ DropTableStatement ParseDrop() {
         Advance(); ExpectKeyword("INTO");
         InsertStatement s;
         s.table = ExpectIdentifier("table name").text;
-        ExpectKeyword("VALUES"); ExpectSymbol("(");
+        ExpectKeyword("VALUES");
         while (true) {
-            s.values.push_back(ParseValue());
-            if (IsSymbol(Peek(), ",")) { Advance(); continue; }
-            break;
+            ExpectSymbol("(");
+            std::vector<Value> row;
+            row.push_back(ParseValue());
+            while (IsSymbol(Peek(), ",")) {
+                Advance();
+                row.push_back(ParseValue());
+            }
+            ExpectSymbol(")");
+            if (s.values.empty()) s.values = row;
+            s.rows.push_back(std::move(row));
+            if (!IsSymbol(Peek(), ",")) break;
+            Advance();
         }
-        ExpectSymbol(")");
         return s;
     }
     static bool IsAggregateFunction(const Token& token) {

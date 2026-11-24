@@ -1094,6 +1094,24 @@ assert(catalog.HasIndex("idx_empty_id"));
         assert(!executor.Execute("SELECT COUNT(*) FROM employees WHERE COUNT(*) > 1;", nullptr, &error, &result));
         assert(!error.empty());
 
+        std::cout << "[3a] Execute multi-row INSERT\n";
+        assert(executor.Execute(
+            "CREATE TABLE multi_students (id INT, name TEXT, age INT);",
+            nullptr, &error
+        ));
+        assert(executor.Execute(
+            "INSERT INTO multi_students VALUES (9, 'Mina', 22), (10, 'Kabir', 23);",
+            &rid, &error
+        ));
+        QueryResult multi_insert_result;
+        assert(executor.Execute(
+            "SELECT * FROM multi_students ORDER BY id;", nullptr, &error,
+            &multi_insert_result
+        ));
+        assert(multi_insert_result.rows.size() == 2);
+        assert(multi_insert_result.rows[0][0].int_value == 9);
+        assert(multi_insert_result.rows[1][0].int_value == 10);
+
         bpm.FlushAllPages();
     }
 
