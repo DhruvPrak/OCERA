@@ -348,7 +348,40 @@ void ExecuteStatement(
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    std::string active_file = (argc > 1) ? argv[1] : "ocera.db";
+    std::string active_file = "ocera.db";
+
+    if (argc > 1) {
+        std::string command = argv[1];
+
+        if (command == "--help" || command == "-h") {
+            std::cout
+                << "OCERA - Optimized Concurrent & Crash-Resilient Database Engine\n\n"
+                << "Usage:\n"
+                << "  ocera run             Start the SQL shell\n"
+                << "  ocera run <database>  Start using a database file\n"
+                << "  ocera --help          Show this help\n"
+                << "  ocera version         Show version\n";
+            return 0;
+        }
+
+        if (command == "version" || command == "--version") {
+            std::cout << "OCERA 1.0.0\n";
+            return 0;
+        }
+
+        if (command == "run") {
+            if (argc > 2) {
+                active_file = argv[2];
+            }
+        } else if (!command.empty() && command[0] != '-') {
+        // Backward compatibility: ocera database.db
+            active_file = command;
+        } else {
+            std::cerr << "Unknown command: " << command
+              << "\nUse 'ocera --help' for usage.\n";
+            return 1;
+        }
+    }
     std::string active_name = active_file;
     const std::size_t slash = active_name.find_last_of("/\\");
     if (slash != std::string::npos) active_name = active_name.substr(slash + 1);
@@ -375,7 +408,7 @@ int main(int argc, char* argv[]) {
 
         std::string line;
         while (true) {
-            std::cout << (reader.HasPendingInput() ? "...> " : "OCERA> ");
+            std::cout << (reader.HasPendingInput() ? "---> " : "OCERA> ");
             if (!std::getline(std::cin, line)) {
                 if (reader.HasPendingInput())
                     std::cout << "\nIncomplete SQL statement discarded at EOF.\n";

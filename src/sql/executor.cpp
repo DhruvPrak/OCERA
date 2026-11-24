@@ -549,7 +549,18 @@ bool SqlExecutor::Execute(
     if (const auto* insert =
             std::get_if<sql::InsertStatement>(&statement)) {
         return ExecuteMutation([&]() {
-            return ExecuteInsert(*insert, inserted_rid, error);
+            std::vector<std::vector<sql::Value>> rows = insert->rows;
+            if (rows.empty()) rows.push_back(insert->values); // legacy AST callers
+            RID last_inserted_rid;
+            for (const auto& row : rows) {
+                sql::InsertStatement single_row;
+                single_row.table = insert->table;
+                single_row.values = row;
+                if (!ExecuteInsert(single_row, &last_inserted_rid, error))
+                    return false;
+            }
+            if (inserted_rid != nullptr) *inserted_rid = last_inserted_rid;
+            return true;
         }, error);
     }
 

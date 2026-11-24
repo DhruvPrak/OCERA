@@ -121,6 +121,22 @@ int main() {
     }
     Report("INSERT strings", before);
 
+    std::cout << "[3a] Multi-row INSERT\n";
+    before = g_failures;
+    {
+        auto s = ParseAs<InsertStatement>(
+            "INSERT INTO students VALUES (1, 'Dhruv'), (2, 'Bhavya'), (3, 'Ishika');");
+        Check(s.rows.size() == 3, "three VALUES tuples parsed");
+        Check(s.values.size() == 2 && IsInt(s.values[0], 1),
+              "legacy first-row values view retained");
+        if (s.rows.size() == 3) {
+            Check(IsStr(s.rows[2][1], "Ishika"), "third tuple values retained");
+        }
+        Check(ParseFails("INSERT INTO t VALUES (1),;"),
+              "trailing tuple comma rejected");
+    }
+    Report("multi-row INSERT", before);
+
     std::cout << "[4] SELECT *\n";
     before = g_failures;
     {

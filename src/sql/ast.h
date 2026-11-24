@@ -109,7 +109,10 @@ struct CreateIndexStatement {
 
 struct InsertStatement {
     std::string table;
+    // One or more VALUES tuples. `values` remains as the first-row
+    // compatibility view for existing callers and tests.
     std::vector<Value> values;
+    std::vector<std::vector<Value>> rows;
 };
 
 enum class JoinType { INNER, LEFT, RIGHT, FULL_OUTER, CROSS };
