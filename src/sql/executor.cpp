@@ -393,8 +393,20 @@ SqlExecutor::SqlExecutor(Catalog& catalog, BufferPoolManager& bpm,
         throw std::runtime_error("could not load saved table list: " + error);
     for (const auto& name : catalog_.TableNames()) {
         const TableSchema* schema = catalog_.GetTable(name);
-        if (schema == nullptr || schema->first_page_id < 2)
+        if (schema == nullptr) {
+            throw std::runtime_error("saved table schema is missing: " + name);
+        }
+
+        // Older CTA1 catalog images may contain schema-only tables whose
+        // first_page_id was never persisted. Keep the schema visible, but do
+        // not fabricate a TableHeap or attach an unrelated allocated page.
+        if (schema->first_page_id == INVALID_PAGE_ID) {
+            continue;
+        }
+        if (schema->first_page_id < 2) {
             throw std::runtime_error("saved table has an invalid starting page: " + name);
+        }
+
         auto heap = std::make_unique<TableHeap>(
             bpm_, schema->first_page_id, transaction_manager_);
         auto record_table = std::make_unique<RecordTable>(*schema, *heap);
